@@ -1,0 +1,44 @@
+spring:
+  application:
+    name: Budget_manager
+
+  profiles:
+    active: postgres
+
+  config:
+    activate:
+          on-profile: postgres
+
+  datasource:
+    url: jdbc:postgresql://localhost:5432/bmdb
+    username: bm
+    password: bm
+
+  jpa:
+    hibernate:
+      ddl-auto: validate
+
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+
+  kafka:
+    bootstrap-servers: localhost:9092
+
+server:
+  port: 8080
+
+app:
+  jwt:
+    secret: "sec"
+
+  security:
+    cookies:
+      secure: false
+
+    refresh:
+      cleanup:
+        enabled: true
+        retention: P7D
+        cron: "0 0 4 * * *"
+
