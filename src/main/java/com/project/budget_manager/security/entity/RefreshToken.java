@@ -45,8 +45,8 @@ public class RefreshToken {
     @Column(name = "replaced_by_token_hash")
     private String replacedByTokenHash;
 
-    @Column(name = "device_id", nullable = false)
-    private String deviceId;
+    @Column(name = "session_id", nullable = false)
+    private String sessionId;
 
     @Column(name = "ip")
     private String ip;
@@ -59,4 +59,10 @@ public class RefreshToken {
 
     @Column(name = "last_used_at")
     private Instant lastUsedAt;
+
+    @Column(name = "compromised_at")
+    private Instant compromisedAt;
+
+    @Column(name = "compromised_reason")
+    private String compromisedReason;
 }

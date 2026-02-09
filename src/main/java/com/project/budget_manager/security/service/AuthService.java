@@ -13,6 +13,7 @@ import org.springframework.security.core.AuthenticationException;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 
+import java.time.Instant;
 import java.util.List;
 
 @Service
@@ -26,12 +27,17 @@ public class AuthService {
     private final RefreshTokenService refreshTokenService;
     private final AccessTokenService accessTokenService;
 
-    public record AuthResult(String accessToken, String rawRefreshToken) {}
+    public record AuthResult(String accessToken, String rawRefreshToken, String sessionId) {
+        @Override public String toString() {
+            return "AuthResult[accessToken=***, rawRefreshToken=***, sessionId=" + sessionId + "]";
+        }
+
+    }
 
     public AuthResult register(String username,
                                String email,
                                String password,
-                               String deviceId,
+                               String sessionId,
                                String ip,
                                String userAgent){
 
@@ -39,14 +45,14 @@ public class AuthService {
         AuthUser authUser = authUserRegistrar.register(username, email, passwordHash);
 
         Long userId = authUser.id();
-        String accessToken = accessTokenService.issueAccessToken(userId, authUser.username(), authUser.roles());
-        RefreshTokenService.IssueResult issue = refreshTokenService.createSession(userId, deviceId, ip, userAgent);
-        return new AuthResult(accessToken, issue.rawRefreshToken());
+        String accessToken = accessTokenService.issueAccessToken(userId, authUser.username(), authUser.roles(), sessionId);
+        String rawRefreshToken = refreshTokenService.createSession(userId, sessionId, ip, userAgent);
+        return new AuthResult(accessToken, rawRefreshToken, sessionId);
     }
 
     public AuthResult login(String username,
                      String password,
-                     String deviceId,
+                     String sessionId,
                      String ip,
                      String userAgent) {
 
@@ -58,20 +64,21 @@ public class AuthService {
 
         AuthUser authUser = authUserProvider.findByUsername(username).orElseThrow(BadCredentialsException::new);
         Long userId = authUser.id();
-        String accessToken = accessTokenService.issueAccessToken(userId, authUser.username(), authUser.roles());
-        RefreshTokenService.IssueResult issue = refreshTokenService.createSession(userId, deviceId, ip, userAgent);
-        return new AuthResult(accessToken, issue.rawRefreshToken());
+        String accessToken = accessTokenService.issueAccessToken(userId, authUser.username(), authUser.roles(), sessionId);
+        String rawRefreshToken = refreshTokenService.createSession(userId, sessionId, ip, userAgent);
+        return new AuthResult(accessToken, rawRefreshToken, sessionId);
     }
 
     public AuthResult refresh(String rawRefreshToken,
                        String ip,
-                       String userAgent) {
-        RefreshTokenService.RotateResult rotateResult = refreshTokenService.rotate(rawRefreshToken, ip, userAgent);
+                       String userAgent,
+                       String sessionId) {
+        RefreshTokenService.RotateResult rotateResult = refreshTokenService.rotate(rawRefreshToken, ip, userAgent, sessionId);
 
         Long userId = rotateResult.userId();
         AuthUser authUser = authUserProvider.findById(userId).orElseThrow(BadCredentialsException::new);
-        String accessToken = accessTokenService.issueAccessToken(userId, authUser.username(), authUser.roles());
-        return new AuthResult(accessToken, rotateResult.rawRefreshToken());
+        String accessToken = accessTokenService.issueAccessToken(userId, authUser.username(), authUser.roles(), rotateResult.sessionId());
+        return new AuthResult(accessToken, rotateResult.rawRefreshToken(), rotateResult.sessionId());
     }
 
     public void logout(String rawRefreshToken){
@@ -82,17 +89,17 @@ public class AuthService {
     }
 
     public void logoutAll(Number userId){
-        refreshTokenService.revokeAllByUserId(userId.longValue());
+        refreshTokenService.revokeAllByUserId(userId.longValue(), Instant.now());
     }
 
-    public void logoutDevice(Long userId, String deviceId){
-        refreshTokenService.revokeAllActiveByUserIdAndDeviceId(userId, deviceId);
+    public void logoutSession(Long userId, String sessionId){
+        refreshTokenService.revokeAllActiveByUserIdAndSessionId(userId, sessionId, Instant.now());
     }
 
     public List<SessionResponse> sessions(Long userId){
         List<RefreshToken> allByUserIdAndRevokedFalse = refreshTokenService.findAllByUserIdAndRevokedFalse(userId);
         return allByUserIdAndRevokedFalse.stream().map(refreshToken -> SessionResponse.builder()
-                .deviceId(refreshToken.getDeviceId())
+                .sessionId(refreshToken.getSessionId())
                 .ip(refreshToken.getIp())
                 .userAgent(refreshToken.getUserAgent())
                 .createdAt(refreshToken.getCreatedAt())

@@ -7,23 +7,23 @@ import org.springframework.stereotype.Component;
 import java.time.Duration;
 
 @Component
-public class RefreshCookieFactory {
+public class SessionIdCookieFactory {
 
     private final boolean secure;
     private final String sameSite;
 
-    public RefreshCookieFactory(@Value("${app.security.cookies.secure:true}") boolean secure
-            ,@Value("${app.security.cookies.sameSite}") String sameSite) {
+    public SessionIdCookieFactory(@Value("${app.security.cookies.secure:true}") boolean secure
+            , @Value("${app.security.cookies.sameSite}") String sameSite) {
         this.secure = secure;
         this.sameSite = sameSite;
     }
 
-    private static final String NAME = "refresh_token";
+    private static final String NAME = "session_id";
     private static final String PATH = "/api/v1/auth";
     private static final Duration TTL = Duration.ofDays(14);
 
-    public ResponseCookie buildRefreshCookie(String rawRefreshToken){
-        return ResponseCookie.from(NAME, rawRefreshToken)
+    public ResponseCookie buildSessionIdCookie(String sessionId){
+        return ResponseCookie.from(NAME, sessionId)
                 .path(PATH)
                 .maxAge(TTL)
                 .sameSite(sameSite)
@@ -32,7 +32,7 @@ public class RefreshCookieFactory {
                 .build();
     }
 
-    public ResponseCookie clearRefreshCookie(){
+    public ResponseCookie clearSessionIdCookie(){
         return ResponseCookie.from(NAME, "")
                 .path(PATH)
                 .maxAge(0)

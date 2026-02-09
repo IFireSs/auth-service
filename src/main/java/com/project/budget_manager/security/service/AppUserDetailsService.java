@@ -1,5 +1,6 @@
 package com.project.budget_manager.security.service;
 
+import com.project.budget_manager.security.enums.Role;
 import com.project.budget_manager.security.port.AuthUserProvider;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
@@ -21,9 +22,12 @@ public class AppUserDetailsService implements UserDetailsService {
             throw new UsernameNotFoundException(username);
         }
         var user = userOptional.get();
+
         var authorities = user.roles().stream()
+                .map(Role::authority)
                 .map(SimpleGrantedAuthority::new)
                 .toList();
+
         return User.builder()
                 .username(user.username())
                 .password(user.passwordHash())

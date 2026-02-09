@@ -77,7 +77,7 @@ public class SecurityConfig {
                         .dispatcherTypeMatchers(DispatcherType.ERROR, DispatcherType.FORWARD).permitAll()
                         .requestMatchers("/error").permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/v1/ping").permitAll()
-                        .requestMatchers("/api/v1/secure/role-test").hasRole("USER")
+                        .requestMatchers("/swagger-ui/**", "/swagger-ui.html", "/v3/api-docs/**").permitAll()
                         .anyRequest().authenticated()
                 );
 

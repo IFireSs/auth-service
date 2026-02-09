@@ -2,6 +2,7 @@ package com.project.budget_manager.persistence.auth;
 
 import com.project.budget_manager.entity.User;
 import com.project.budget_manager.repository.UserRepository;
+import com.project.budget_manager.security.enums.Role;
 import com.project.budget_manager.security.exceptions.EmailAlreadyExistsException;
 import com.project.budget_manager.security.exceptions.UsernameAlreadyExistsException;
 import com.project.budget_manager.security.port.AuthUser;
@@ -34,7 +35,7 @@ public class JpaAuthUserRegistrar implements AuthUserRegistrar {
                 .passwordHash(passwordHash)
                 .build());
 
-        userRoleCommandRepository.addRole(user.getId(), "ROLE_USER");
-        return new AuthUser(user.getId(), user.getUsername(), user.getPasswordHash(), List.of("ROLE_USER"));
+        userRoleCommandRepository.addRole(user.getId(), Role.USER);
+        return new AuthUser(user.getId(), user.getUsername(), user.getPasswordHash(), List.of(Role.USER));
     }
 }

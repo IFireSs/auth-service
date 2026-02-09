@@ -1,6 +1,7 @@
 package com.project.budget_manager.security.service;
 
 import com.nimbusds.jose.util.Base64URL;
+import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
 import java.nio.charset.StandardCharsets;
@@ -10,6 +11,7 @@ import java.security.SecureRandom;
 import java.util.HexFormat;
 
 @Service
+@RequiredArgsConstructor
 public class RefreshTokenCrypto {
     private final SecureRandom random = new SecureRandom();
 
@@ -28,4 +30,8 @@ public class RefreshTokenCrypto {
             throw new IllegalStateException("SHA-256 not available", e);
         }
     }
+
+
+
+
 }

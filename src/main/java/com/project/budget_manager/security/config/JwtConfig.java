@@ -17,7 +17,7 @@ import java.nio.charset.StandardCharsets;
 public class JwtConfig {
 
     @Bean
-    public SecretKey jwtSecretKey(@Value("${app.jwt.secret}") String secret) {
+    public SecretKey jwtSecretKey(@Value("${app.security.jwt.secret}") String secret) {
         return new SecretKeySpec(secret.getBytes(StandardCharsets.UTF_8), "HmacSHA256");
     }
 

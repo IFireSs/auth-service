@@ -4,10 +4,12 @@ import com.project.budget_manager.security.api.dto.LoginRequest;
 import com.project.budget_manager.security.api.dto.RegisterRequest;
 import com.project.budget_manager.security.api.dto.SessionResponse;
 import com.project.budget_manager.security.api.dto.TokenResponse;
+import com.project.budget_manager.security.cookie.SessionIdCookieFactory;
 import com.project.budget_manager.security.exceptions.InvalidRefreshTokenException;
 import com.project.budget_manager.security.service.AuthService;
 import com.project.budget_manager.security.cookie.RefreshCookieFactory;
 import jakarta.servlet.http.HttpServletRequest;
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.ResponseCookie;
@@ -35,49 +37,41 @@ public class AuthController {
 
     private final AuthService authService;
     private final RefreshCookieFactory refreshCookieFactory;
+    private final SessionIdCookieFactory sessionIdCookieFactory;
 
     @PostMapping("/register")
-    public ResponseEntity<TokenResponse> register(@RequestBody RegisterRequest registerRequest,
+    public ResponseEntity<TokenResponse> register(@Valid @RequestBody RegisterRequest registerRequest,
                                                HttpServletRequest request,
                                                @RequestHeader(value = "User-Agent", required = false) String userAgent) {
-
-        AuthService.AuthResult authResult = authService.register(registerRequest.getUsername(),
+        AuthService.AuthResult authResult = authService.register(
+                registerRequest.getUsername(),
                 registerRequest.getEmail(),
                 registerRequest.getPassword(),
                 UUID.randomUUID().toString(),
                 request.getRemoteAddr(),
                 userAgent);
-        ResponseCookie responseCookie = refreshCookieFactory.buildRefreshCookie(authResult.rawRefreshToken());
 
-        return ResponseEntity.ok()
-                .header(HttpHeaders.SET_COOKIE, responseCookie.toString())
-                .body(TokenResponse.builder()
-                        .accessToken(authResult.accessToken())
-                        .build());
+        return getOkAuthResponseEntity(authResult);
     }
 
     @PostMapping("/login")
-    public ResponseEntity<TokenResponse> login(@RequestBody LoginRequest loginRequest,
+    public ResponseEntity<TokenResponse> login(@Valid @RequestBody LoginRequest loginRequest,
                                                HttpServletRequest request,
                                                @RequestHeader(value = "User-Agent", required = false) String userAgent) {
 
-        AuthService.AuthResult authResult = authService.login(loginRequest.getUsername(),
+        AuthService.AuthResult authResult = authService.login(
+                loginRequest.getUsername(),
                 loginRequest.getPassword(),
                 UUID.randomUUID().toString(),
                 request.getRemoteAddr(),
                 userAgent);
-        ResponseCookie responseCookie = refreshCookieFactory.buildRefreshCookie(authResult.rawRefreshToken());
-
-        return ResponseEntity.ok()
-                .header(HttpHeaders.SET_COOKIE, responseCookie.toString())
-                .body(TokenResponse.builder()
-                    .accessToken(authResult.accessToken())
-                    .build());
+        return getOkAuthResponseEntity(authResult);
     }
 
     @PostMapping("/refresh")
     public ResponseEntity<TokenResponse> refresh(
             @CookieValue(name = "refresh_token", required = false) String refreshToken,
+            @CookieValue(name = "session_id", required = false) String sessionId,
             HttpServletRequest request,
             @RequestHeader(value = "User-Agent", required = false) String userAgent){
 
@@ -85,22 +79,30 @@ public class AuthController {
             throw new InvalidRefreshTokenException();
         }
 
-        AuthService.AuthResult authResult = authService.refresh(refreshToken, request.getRemoteAddr(), userAgent);
-        ResponseCookie responseCookie = refreshCookieFactory.buildRefreshCookie(authResult.rawRefreshToken());
+        AuthService.AuthResult authResult = authService.refresh(refreshToken, request.getRemoteAddr(), userAgent, sessionId);
 
-        return ResponseEntity.ok()
-                .header(HttpHeaders.SET_COOKIE, responseCookie.toString())
-                .body(TokenResponse.builder()
-                        .accessToken(authResult.accessToken())
-                        .build());
+        var refreshResult = ResponseEntity.ok();
+
+        if (authResult.rawRefreshToken() != null) {
+            refreshResult.header(HttpHeaders.SET_COOKIE,
+                    refreshCookieFactory.buildRefreshCookie(authResult.rawRefreshToken()).toString());
+        }
+
+        return refreshResult.body(TokenResponse.builder()
+                .accessToken(authResult.accessToken())
+                .build());
     }
 
     @PostMapping("/logout")
     public ResponseEntity<Void> logout(@CookieValue(name = "refresh_token", required = false) String refreshToken){
         authService.logout(refreshToken);
-        ResponseCookie responseCookie = refreshCookieFactory.clearRefreshCookie();
+        ResponseCookie refreshCookie = refreshCookieFactory.clearRefreshCookie();
+        ResponseCookie sessionIdCookie = sessionIdCookieFactory.clearSessionIdCookie();
         return ResponseEntity.noContent()
-                .header(HttpHeaders.SET_COOKIE, responseCookie.toString())
+                .headers(header -> {
+                    header.add(HttpHeaders.SET_COOKIE, refreshCookie.toString());
+                    header.add(HttpHeaders.SET_COOKIE, sessionIdCookie.toString());
+                })
                 .build();
     }
 
@@ -108,24 +110,32 @@ public class AuthController {
     public ResponseEntity<Void> logoutAll(@AuthenticationPrincipal Jwt jwt){
         Long userId = ((Number) jwt.getClaim("uid")).longValue();
         authService.logoutAll(userId);
-        ResponseCookie responseCookie = refreshCookieFactory.clearRefreshCookie();
+        ResponseCookie refreshCookie = refreshCookieFactory.clearRefreshCookie();
+        ResponseCookie sessionIdCookie = sessionIdCookieFactory.clearSessionIdCookie();
         return ResponseEntity.noContent()
-                .header(HttpHeaders.SET_COOKIE, responseCookie.toString())
+                .headers(header -> {
+                    header.add(HttpHeaders.SET_COOKIE, refreshCookie.toString());
+                    header.add(HttpHeaders.SET_COOKIE, sessionIdCookie.toString());
+                })
                 .build();
     }
 
-    @PostMapping("/logout-device/{deviceId}")
-    public ResponseEntity<Void> logoutDevice(@AuthenticationPrincipal Jwt jwt,
-                                             @PathVariable String deviceId,
-                                             @RequestHeader(name = "X-Device-Id", required = false) String currentDeviceId){
+    @PostMapping("/logout-session/{sessionId}")
+    public ResponseEntity<Void> logoutSession(@AuthenticationPrincipal Jwt jwt,
+                                              @PathVariable String sessionId){
         Long userId = ((Number) jwt.getClaim("uid")).longValue();
-        authService.logoutDevice(userId, deviceId);
-        if (!deviceId.equals(currentDeviceId)) {
+        authService.logoutSession(userId, sessionId);
+        String currentSessionId = jwt.getClaimAsString("sid");
+        if (!sessionId.equals(currentSessionId)) {
             return ResponseEntity.noContent().build();
         }
-        ResponseCookie responseCookie = refreshCookieFactory.clearRefreshCookie();
+        ResponseCookie refreshCookie = refreshCookieFactory.clearRefreshCookie();
+        ResponseCookie sessionIdCookie = sessionIdCookieFactory.clearSessionIdCookie();
         return ResponseEntity.noContent()
-                .header(HttpHeaders.SET_COOKIE, responseCookie.toString())
+                .headers(header -> {
+                    header.add(HttpHeaders.SET_COOKIE, refreshCookie.toString());
+                    header.add(HttpHeaders.SET_COOKIE, sessionIdCookie.toString());
+                })
                 .build();
     }
 
@@ -138,5 +148,19 @@ public class AuthController {
     @GetMapping("/csrf")
     public Map<String, String> csrf(CsrfToken token) {
         return Map.of("token", token.getToken());
+    }
+
+
+    private ResponseEntity<TokenResponse> getOkAuthResponseEntity(AuthService.AuthResult authResult) {
+        ResponseCookie refreshCookie = refreshCookieFactory.buildRefreshCookie(authResult.rawRefreshToken());
+        ResponseCookie sessionIdCookie = sessionIdCookieFactory.buildSessionIdCookie(authResult.sessionId());
+        return ResponseEntity.ok()
+                .headers(header -> {
+                    header.add(HttpHeaders.SET_COOKIE, refreshCookie.toString());
+                    header.add(HttpHeaders.SET_COOKIE, sessionIdCookie.toString());
+                })
+                .body(TokenResponse.builder()
+                        .accessToken(authResult.accessToken())
+                        .build());
     }
 }

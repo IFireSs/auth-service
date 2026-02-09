@@ -2,6 +2,7 @@ package com.project.budget_manager.persistence.auth;
 
 import com.project.budget_manager.entity.User;
 import com.project.budget_manager.repository.UserRepository;
+import com.project.budget_manager.security.enums.Role;
 import com.project.budget_manager.security.port.AuthUser;
 import com.project.budget_manager.security.port.AuthUserProvider;
 import lombok.RequiredArgsConstructor;
@@ -26,7 +27,7 @@ public class JpaAuthUserProvider implements AuthUserProvider {
         }
         User user = userOptional.get();
         Long userId = user.getId();
-        List<String> roles = userRoleQueryRepository.findRolesByUserId(userId);
+        List<Role> roles = userRoleQueryRepository.findRolesByUserId(userId);
         return Optional.of(new AuthUser(userId, user.getUsername(), user.getPasswordHash(), roles));
     }
 
@@ -37,7 +38,7 @@ public class JpaAuthUserProvider implements AuthUserProvider {
             return Optional.empty();
         }
         User user = userOptional.get();
-        List<String> roles = userRoleQueryRepository.findRolesByUserId(userId);
+        List<Role> roles = userRoleQueryRepository.findRolesByUserId(userId);
         return Optional.of(new AuthUser(userId, user.getUsername(), user.getPasswordHash(), roles));
     }
 }

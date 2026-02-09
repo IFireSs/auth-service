@@ -18,23 +18,25 @@ public interface RefreshTokenRepository extends JpaRepository<RefreshToken, Long
     @Query("""
         update RefreshToken t
         set t.revoked = true,
-            t.revokedAt = CURRENT_TIMESTAMP
+            t.revokedAt = :now
         where t.userId = :userId
         and t.revoked = false
         """)
-    int revokeAllActiveByUserId(@Param("userId") Long userId);
+    int revokeAllActiveByUserId(@Param("userId") Long userId,
+                                @Param("now") Instant now);
 
     @Modifying(flushAutomatically = true, clearAutomatically = true)
     @Query("""
         update RefreshToken t
         set t.revoked = true,
-            t.revokedAt = CURRENT_TIMESTAMP
+            t.revokedAt = :now
         where t.userId = :userId
-        and t.deviceId = :deviceId
+        and t.sessionId = :sessionId
         and t.revoked = false
         """)
-    int revokeAllActiveByUserIdAndDeviceId(@Param("userId") Long userId,
-                                           @Param("deviceId") String deviceId);
+    int revokeAllActiveByUserIdAndSessionId(@Param("userId") Long userId,
+                                            @Param("sessionId") String sessionId,
+                                            @Param("now") Instant now);
 
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select t from RefreshToken t where t.tokenHash = :hash")
@@ -45,4 +47,42 @@ public interface RefreshTokenRepository extends JpaRepository<RefreshToken, Long
     @Modifying(flushAutomatically = true, clearAutomatically = true)
     @Query("delete from RefreshToken t where t.expiresAt < :cutoff")
     int deleteExpiredBefore(@Param("cutoff") Instant cutoff);
+
+    @Modifying(flushAutomatically = true, clearAutomatically = true)
+    @Query("delete from RefreshToken t where t.tokenHash = :hash")
+    int deleteByTokenHash(@Param("hash") String hash);
+
+    @Modifying(flushAutomatically = true, clearAutomatically = true)
+    @Query("delete from RefreshToken t where t.userId = :userId")
+    int deleteAllByUserId(@Param("userId") Long userId);
+
+    @Modifying(flushAutomatically = true, clearAutomatically = true)
+    @Query("delete from RefreshToken t where t.userId = :userId and t.sessionId = :sessionId")
+    int deleteAllByUserIdAndSessionId(@Param("userId") Long userId, @Param("sessionId") String sessionId);
+
+    @Modifying(flushAutomatically = true, clearAutomatically = true)
+    @Query("""
+        update RefreshToken t
+           set t.compromisedAt = :now,
+               t.compromisedReason = :reason
+         where t.userId = :userId
+           and t.sessionId = :sessionId
+           and t.compromisedAt is null
+    """)
+    int markSessionCompromisedOnce(@Param("userId") Long userId,
+                                   @Param("sessionId") String sessionId,
+                                   @Param("now") Instant now,
+                                   @Param("reason") String reason);
+
+    @Modifying(flushAutomatically = true, clearAutomatically = true)
+    @Query("""
+        update RefreshToken t
+           set t.compromisedAt = :now,
+               t.compromisedReason = :reason
+         where t.userId = :userId
+           and t.compromisedAt is null
+    """)
+    int markAllSessionsCompromisedOnce(@Param("userId") Long userId,
+                                   @Param("now") Instant now,
+                                   @Param("reason") String reason);
 }

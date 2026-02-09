@@ -20,7 +20,8 @@ spring:
 
   flyway:
     enabled: true
-    locations: classpath:db/migration
+    locations: classpath:db/migration, 
+               classpath:db/local/migration
 
   kafka:
     bootstrap-servers: localhost:9092
@@ -29,16 +30,25 @@ server:
   port: 8080
 
 app:
-  jwt:
-    secret: "sec"
-
   security:
+    jwt:
+      secret: "sec"
+
     cookies:
-      secure: false
+      secure: true
+      sameSite: "Lax"
 
     refresh:
+      revoke-detect: true
+
       cleanup:
         enabled: true
         retention: P7D
         cron: "0 0 4 * * *"
+
+springdoc:
+  swagger-ui:
+    csrf:
+      enabled: true
+    withCredentials: true
 
