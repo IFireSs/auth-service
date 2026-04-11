@@ -6,6 +6,7 @@ import com.project.budget_manager.security.exceptions.BadCredentialsException;
 import com.project.budget_manager.security.exceptions.EmailAlreadyExistsException;
 import com.project.budget_manager.security.exceptions.ExpiredRefreshTokenException;
 import com.project.budget_manager.security.exceptions.InvalidRefreshTokenException;
+import com.project.budget_manager.security.exceptions.RefreshTokenAlreadyProcessedException;
 import com.project.budget_manager.security.exceptions.RefreshTokenReuseDetectedException;
 import com.project.budget_manager.security.exceptions.UsernameAlreadyExistsException;
 import lombok.RequiredArgsConstructor;
@@ -23,13 +24,28 @@ public class ExceptionAuthHandler {
 
     @ExceptionHandler({InvalidRefreshTokenException.class,
             ExpiredRefreshTokenException.class,
-            RefreshTokenReuseDetectedException.class,
-            BadCredentialsException.class,
-            UsernameAlreadyExistsException.class,
-            EmailAlreadyExistsException.class})
+            RefreshTokenReuseDetectedException.class})
     public ResponseEntity<?> handleRefreshAuth(RuntimeException ex) {
         return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
                 .header(HttpHeaders.SET_COOKIE, refreshCookieFactory.clearRefreshCookie().toString())
                 .header(HttpHeaders.SET_COOKIE, sessionIdCookieFactory.clearSessionIdCookie().toString()).body(ex.getMessage());
+    }
+
+    @ExceptionHandler(BadCredentialsException.class)
+    public ResponseEntity<?> handleBadCredentials(BadCredentialsException ex) {
+        return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(ex.getMessage());
+    }
+
+    @ExceptionHandler({
+            UsernameAlreadyExistsException.class,
+            EmailAlreadyExistsException.class
+    })
+    public ResponseEntity<?> handleRegistrationConflict(RuntimeException ex) {
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(ex.getMessage());
+    }
+
+    @ExceptionHandler(RefreshTokenAlreadyProcessedException.class)
+    public ResponseEntity<?> handleRefreshAlreadyProcessed(RefreshTokenAlreadyProcessedException ex) {
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(ex.getMessage());
     }
 }

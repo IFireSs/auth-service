@@ -73,20 +73,25 @@ public class AuthController {
             @CookieValue(name = "refresh_token", required = false) String refreshToken,
             @CookieValue(name = "session_id", required = false) String sessionId,
             HttpServletRequest request,
-            @RequestHeader(value = "User-Agent", required = false) String userAgent){
+            @RequestHeader(value = "User-Agent", required = false) String userAgent,
+            @RequestHeader(value = "X-Refresh-Attempt-Id", required = false) String refreshAttemptId){
 
         if(refreshToken == null){
             throw new InvalidRefreshTokenException();
         }
 
-        AuthService.AuthResult authResult = authService.refresh(refreshToken, request.getRemoteAddr(), userAgent, sessionId);
+        AuthService.AuthResult authResult = authService.refresh(
+                refreshToken,
+                request.getRemoteAddr(),
+                userAgent,
+                sessionId,
+                refreshAttemptId
+        );
 
         var refreshResult = ResponseEntity.ok();
 
-        if (authResult.rawRefreshToken() != null) {
-            refreshResult.header(HttpHeaders.SET_COOKIE,
-                    refreshCookieFactory.buildRefreshCookie(authResult.rawRefreshToken()).toString());
-        }
+        refreshResult.header(HttpHeaders.SET_COOKIE,
+                refreshCookieFactory.buildRefreshCookie(authResult.rawRefreshToken()).toString());
 
         return refreshResult.body(TokenResponse.builder()
                 .accessToken(authResult.accessToken())
@@ -94,8 +99,9 @@ public class AuthController {
     }
 
     @PostMapping("/logout")
-    public ResponseEntity<Void> logout(@CookieValue(name = "refresh_token", required = false) String refreshToken){
-        authService.logout(refreshToken);
+    public ResponseEntity<Void> logout(@CookieValue(name = "refresh_token", required = false) String refreshToken,
+                                       @AuthenticationPrincipal Jwt jwt){
+        authService.logout(refreshToken, extractJwtSession(jwt));
         ResponseCookie refreshCookie = refreshCookieFactory.clearRefreshCookie();
         ResponseCookie sessionIdCookie = sessionIdCookieFactory.clearSessionIdCookie();
         return ResponseEntity.noContent()
@@ -162,5 +168,17 @@ public class AuthController {
                 .body(TokenResponse.builder()
                         .accessToken(authResult.accessToken())
                         .build());
+    }
+
+    private AuthService.JwtSession extractJwtSession(Jwt jwt) {
+        if (jwt == null) {
+            return null;
+        }
+        Number userIdClaim = jwt.getClaim("uid");
+        String sessionId = jwt.getClaimAsString("sid");
+        if (userIdClaim == null || sessionId == null || sessionId.isBlank()) {
+            return null;
+        }
+        return new AuthService.JwtSession(userIdClaim.longValue(), sessionId);
     }
 }

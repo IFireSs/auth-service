@@ -1,6 +1,6 @@
 package com.project.budget_manager.security.cookie;
 
-import org.springframework.beans.factory.annotation.Value;
+import com.project.budget_manager.security.config.AppSecurityProperties;
 import org.springframework.http.ResponseCookie;
 import org.springframework.stereotype.Component;
 
@@ -11,21 +11,21 @@ public class SessionIdCookieFactory {
 
     private final boolean secure;
     private final String sameSite;
+    private final Duration ttl;
 
-    public SessionIdCookieFactory(@Value("${app.security.cookies.secure:true}") boolean secure
-            , @Value("${app.security.cookies.sameSite}") String sameSite) {
-        this.secure = secure;
-        this.sameSite = sameSite;
+    public SessionIdCookieFactory(AppSecurityProperties securityProperties) {
+        this.secure = securityProperties.cookies().secure();
+        this.sameSite = securityProperties.cookies().sameSite();
+        this.ttl = securityProperties.refresh().ttl();
     }
 
     private static final String NAME = "session_id";
     private static final String PATH = "/api/v1/auth";
-    private static final Duration TTL = Duration.ofDays(14);
 
     public ResponseCookie buildSessionIdCookie(String sessionId){
         return ResponseCookie.from(NAME, sessionId)
                 .path(PATH)
-                .maxAge(TTL)
+                .maxAge(ttl)
                 .sameSite(sameSite)
                 .httpOnly(true)
                 .secure(secure)

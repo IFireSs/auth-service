@@ -1,7 +1,7 @@
 package com.project.budget_manager.security.service;
 
 import com.project.budget_manager.security.enums.Role;
-import com.project.budget_manager.security.port.AuthUserProvider;
+import com.project.budget_manager.security.port.IAuthUserProvider;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.userdetails.UserDetails;
@@ -13,7 +13,7 @@ import org.springframework.stereotype.Service;
 @Service
 @RequiredArgsConstructor
 public class AppUserDetailsService implements UserDetailsService {
-    private final AuthUserProvider authUserProvider;
+    private final IAuthUserProvider authUserProvider;
 
     @Override
     public UserDetails loadUserByUsername(String username) throws UsernameNotFoundException {

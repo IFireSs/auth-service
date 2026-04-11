@@ -21,24 +21,17 @@ public class SecurityConfig {
 
     @Bean
     @Order(1)
-    public SecurityFilterChain cookieAuthChain(HttpSecurity http) throws Exception {
-        http.securityMatcher(cookieAuthMatcher())
+    public SecurityFilterChain logoutChain(HttpSecurity http) throws Exception {
+        http.securityMatcher(PathPatternRequestMatcher.withDefaults().matcher(HttpMethod.POST, "/api/v1/auth/logout/**"))
                 .csrf(csrf -> csrf
                         .csrfTokenRepository(CookieCsrfTokenRepository.withHttpOnlyFalse())
-                        .ignoringRequestMatchers(
-                                PathPatternRequestMatcher.withDefaults()
-                                        .matcher(HttpMethod.POST, "/api/v1/auth/login/**"),
-                                PathPatternRequestMatcher.withDefaults()
-                                        .matcher(HttpMethod.POST, "/api/v1/auth/register/**")
-                        )
                 )
                 .sessionManagement(sm -> sm.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+                .oauth2ResourceServer(oauth2 -> oauth2
+                        .jwt(jwt -> jwt.jwtAuthenticationConverter(jwtAuthenticationConverter()))
+                )
                 .authorizeHttpRequests(auth -> auth
-                        .requestMatchers(HttpMethod.POST, "/api/v1/auth/login/**").permitAll()
-                        .requestMatchers(HttpMethod.GET,  "/api/v1/auth/csrf/**").permitAll()
-                        .requestMatchers(HttpMethod.POST, "/api/v1/auth/refresh/**").permitAll()
                         .requestMatchers(HttpMethod.POST, "/api/v1/auth/logout/**").permitAll()
-                        .requestMatchers(HttpMethod.POST, "/api/v1/auth/register/**").permitAll()
                         .anyRequest().denyAll()
                 )
                 .httpBasic(AbstractHttpConfigurer::disable)
@@ -49,6 +42,27 @@ public class SecurityConfig {
 
     @Bean
     @Order(2)
+    public SecurityFilterChain cookieAuthChain(HttpSecurity http) throws Exception {
+        http.securityMatcher(cookieAuthMatcher())
+                .csrf(csrf -> csrf
+                        .csrfTokenRepository(CookieCsrfTokenRepository.withHttpOnlyFalse())
+                )
+                .sessionManagement(sm -> sm.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+                .authorizeHttpRequests(auth -> auth
+                        .requestMatchers(HttpMethod.POST, "/api/v1/auth/login/**").permitAll()
+                        .requestMatchers(HttpMethod.GET,  "/api/v1/auth/csrf/**").permitAll()
+                        .requestMatchers(HttpMethod.POST, "/api/v1/auth/refresh/**").permitAll()
+                        .requestMatchers(HttpMethod.POST, "/api/v1/auth/register/**").permitAll()
+                        .anyRequest().denyAll()
+                )
+                .httpBasic(AbstractHttpConfigurer::disable)
+                .formLogin(AbstractHttpConfigurer::disable);
+
+        return http.build();
+    }
+
+    @Bean
+    @Order(3)
     public SecurityFilterChain jwtAuthChain(HttpSecurity http) throws Exception {
         http.securityMatcher("/api/v1/auth/**")
                 .csrf(AbstractHttpConfigurer::disable)
@@ -66,7 +80,7 @@ public class SecurityConfig {
     }
 
     @Bean
-    @Order(3)
+    @Order(4)
     public SecurityFilterChain apiChain(HttpSecurity http) throws Exception {
         http.csrf(AbstractHttpConfigurer::disable)
                 .sessionManagement(sm -> sm.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
@@ -76,7 +90,8 @@ public class SecurityConfig {
                 .authorizeHttpRequests(auth -> auth
                         .dispatcherTypeMatchers(DispatcherType.ERROR, DispatcherType.FORWARD).permitAll()
                         .requestMatchers("/error").permitAll()
-                        .requestMatchers(HttpMethod.GET, "/api/v1/ping").permitAll()
+                        .requestMatchers(HttpMethod.GET, "/api/v1/ping").hasAuthority("ROLE_USER")
+                        .requestMatchers(HttpMethod.GET, "/api/v1/role").hasRole("USER")
                         .requestMatchers("/swagger-ui/**", "/swagger-ui.html", "/v3/api-docs/**").permitAll()
                         .anyRequest().authenticated()
                 );
@@ -88,7 +103,7 @@ public class SecurityConfig {
     public JwtAuthenticationConverter jwtAuthenticationConverter() {
         JwtGrantedAuthoritiesConverter gac = new JwtGrantedAuthoritiesConverter();
         gac.setAuthoritiesClaimName("roles");
-        gac.setAuthorityPrefix("");
+        gac.setAuthorityPrefix("ROLE_");
         JwtAuthenticationConverter converter = new JwtAuthenticationConverter();
         converter.setJwtGrantedAuthoritiesConverter(gac);
         return converter;
@@ -99,8 +114,7 @@ public class SecurityConfig {
                 PathPatternRequestMatcher.withDefaults().matcher(HttpMethod.POST, "/api/v1/auth/login/**"),
                 PathPatternRequestMatcher.withDefaults().matcher(HttpMethod.POST, "/api/v1/auth/register/**"),
                 PathPatternRequestMatcher.withDefaults().matcher(HttpMethod.GET,  "/api/v1/auth/csrf/**"),
-                PathPatternRequestMatcher.withDefaults().matcher(HttpMethod.POST, "/api/v1/auth/refresh/**"),
-                PathPatternRequestMatcher.withDefaults().matcher(HttpMethod.POST, "/api/v1/auth/logout/**")
+                PathPatternRequestMatcher.withDefaults().matcher(HttpMethod.POST, "/api/v1/auth/refresh/**")
         );
     }
 }

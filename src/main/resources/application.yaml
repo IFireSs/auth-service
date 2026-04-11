@@ -2,17 +2,11 @@ spring:
   application:
     name: Budget_manager
 
-  profiles:
-    active: postgres
-
   config:
-    activate:
-          on-profile: postgres
+    import: optional:file:.env[.properties]
 
-  datasource:
-    url: jdbc:postgresql://localhost:5432/bmdb
-    username: bm
-    password: bm
+  profiles:
+    default: dev
 
   jpa:
     hibernate:
@@ -20,35 +14,44 @@ spring:
 
   flyway:
     enabled: true
-    locations: classpath:db/migration, 
-               classpath:db/local/migration
+    locations: classpath:db/migration
 
   kafka:
-    bootstrap-servers: localhost:9092
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
 
 server:
-  port: 8080
+  port: ${SERVER_PORT:8080}
 
 app:
   security:
+    access-token:
+      issuer: ${APP_SECURITY_ACCESS_TOKEN_ISSUER:budget-manager}
+      ttl: ${APP_SECURITY_ACCESS_TOKEN_TTL:PT10M}
+      validation-mode: ${APP_SECURITY_ACCESS_TOKEN_VALIDATION_MODE:stateful}
+
     jwt:
-      secret: "sec"
+      secret: ${APP_SECURITY_JWT_SECRET}
 
     cookies:
-      secure: true
-      sameSite: "Lax"
+      secure: ${APP_SECURITY_COOKIES_SECURE:true}
+      same-site: ${APP_SECURITY_COOKIES_SAME_SITE:Lax}
 
     refresh:
-      revoke-detect: true
+      revoke-detect: ${APP_SECURITY_REFRESH_REVOKE_DETECT:true}
+      ttl: ${APP_SECURITY_REFRESH_TTL:P14D}
+      reuse-grace: ${APP_SECURITY_REFRESH_REUSE_GRACE:PT3S}
+      client-binding:
+        require-session-id: ${APP_SECURITY_REFRESH_REQUIRE_SESSION_ID:true}
+        bind-to-user-agent: ${APP_SECURITY_REFRESH_BIND_TO_USER_AGENT:true}
+        bind-to-ip: ${APP_SECURITY_REFRESH_BIND_TO_IP:false}
 
       cleanup:
-        enabled: true
-        retention: P7D
-        cron: "0 0 4 * * *"
+        enabled: ${APP_SECURITY_REFRESH_CLEANUP_ENABLED:true}
+        retention: ${APP_SECURITY_REFRESH_CLEANUP_RETENTION:P7D}
+        cron: "${APP_SECURITY_REFRESH_CLEANUP_CRON:0 0 4 * * *}"
 
 springdoc:
   swagger-ui:
     csrf:
       enabled: true
     withCredentials: true
-

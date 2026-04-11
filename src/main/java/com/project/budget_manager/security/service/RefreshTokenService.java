@@ -1,8 +1,9 @@
 package com.project.budget_manager.security.service;
 
+import com.project.budget_manager.security.config.AppSecurityProperties;
 import com.project.budget_manager.security.entity.RefreshToken;
+import com.project.budget_manager.security.exceptions.RefreshTokenAlreadyProcessedException;
 import com.project.budget_manager.security.repository.RefreshTokenRepository;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import com.project.budget_manager.security.exceptions.ExpiredRefreshTokenException;
@@ -16,35 +17,47 @@ import java.util.Optional;
 
 @Service
 public class RefreshTokenService {
+    private static final String UNKNOWN_USER_AGENT = "unknown";
+
     private final RefreshTokenRepository refreshTokenRepository;
     private final RefreshTokenCrypto refreshTokenCrypto;
-    private final Duration duration = Duration.ofDays(14);
-
-    private final boolean revoke_detect;
-
-    private final Duration reuseGrace = Duration.ofSeconds(3);
+    private final RefreshReplayCrypto refreshReplayCrypto;
+    private final Duration refreshTtl;
+    private final boolean revokeDetect;
+    private final Duration reuseGrace;
+    private final boolean requireSessionId;
+    private final boolean bindToUserAgent;
+    private final boolean bindToIp;
 
     RefreshTokenService(RefreshTokenRepository refreshTokenRepository
                         ,RefreshTokenCrypto refreshTokenCrypto
-                        ,@Value("${app.security.refresh.revoke-detect:true}") boolean revoke_detect) {
+                        ,RefreshReplayCrypto refreshReplayCrypto
+                        ,AppSecurityProperties securityProperties) {
         this.refreshTokenRepository = refreshTokenRepository;
         this.refreshTokenCrypto = refreshTokenCrypto;
-        this.revoke_detect = revoke_detect;
+        this.refreshReplayCrypto = refreshReplayCrypto;
+        this.refreshTtl = securityProperties.refresh().ttl();
+        this.revokeDetect = securityProperties.refresh().revokeDetect();
+        this.reuseGrace = securityProperties.refresh().reuseGrace();
+        this.requireSessionId = securityProperties.refresh().clientBinding().requireSessionId();
+        this.bindToUserAgent = securityProperties.refresh().clientBinding().bindToUserAgent();
+        this.bindToIp = securityProperties.refresh().clientBinding().bindToIp();
     }
 
     public String createSession(Long userId, String sessionId, String ip, String userAgent) {
         var rawToken = refreshTokenCrypto.generateRawToken();
         var hash = refreshTokenCrypto.hash(rawToken);
         var now = Instant.now();
+        String normalizedUserAgent = normalizeUserAgent(userAgent);
 
         refreshTokenRepository.save(RefreshToken.builder()
                 .userId(userId)
                 .tokenHash(hash)
-                .expiresAt(now.plus(duration))
+                .expiresAt(now.plus(refreshTtl))
                 .revoked(false)
                 .sessionId(sessionId)
                 .ip(ip)
-                .userAgent(userAgent == null ? "unknown" : userAgent)
+                .userAgent(normalizedUserAgent)
                 .createdAt(now)
                 .lastUsedAt(now)
                 .build());
@@ -64,55 +77,79 @@ public class RefreshTokenService {
     }
 
     @Transactional(noRollbackFor = RefreshTokenReuseDetectedException.class)
-    public RotateResult rotate(String rawRefreshToken, String ip, String userAgent, String sessionId) {
+    public RotateResult rotate(String rawRefreshToken,
+                               String ip,
+                               String userAgent,
+                               String sessionId,
+                               String refreshAttemptId) {
 
         var oldHash = refreshTokenCrypto.hash(rawRefreshToken);
         var old = refreshTokenRepository.findByTokenHashForUpdate(oldHash).orElseThrow(InvalidRefreshTokenException::new);
         var now = Instant.now();
+        String normalizedAttemptId = normalizeAttemptId(refreshAttemptId);
+        String normalizedSessionId = normalizeSessionId(sessionId);
+        String normalizedUserAgent = normalizeUserAgent(userAgent);
         if (old.getExpiresAt().isBefore(now)) {
             throw new ExpiredRefreshTokenException();
         }
-        if (revoke_detect && old.getCompromisedAt() != null) {
+        if (revokeDetect && old.getCompromisedAt() != null) {
             throw new RefreshTokenReuseDetectedException();
         }
-        boolean sessionMismatch = (sessionId == null) || !sessionId.equals(old.getSessionId());
-        boolean ipMismatch = old.getIp() != null && ip != null && !ip.equals(old.getIp());
-        boolean uaMismatch = old.getUserAgent() != null && userAgent != null && !userAgent.equals(old.getUserAgent());
+        if (requireSessionId && normalizedSessionId == null) {
+            throw new InvalidRefreshTokenException();
+        }
 
-        if (sessionMismatch && ipMismatch && uaMismatch) {
-            markCompromisedAndKillAllSessionsOnce(old.getUserId(), now, "SESSION_IP_UA_MISMATCH");
-            throw new RefreshTokenReuseDetectedException();
-        }else if(sessionMismatch && ipMismatch){
-            markCompromisedAndKillSessionOnce(old.getUserId(), old.getSessionId(), now, "SESSION_IP_MISMATCH");
-            throw new RefreshTokenReuseDetectedException();
-        }else if(sessionMismatch) {
-            markCompromisedAndKillSessionOnce(old.getUserId(), old.getSessionId(), now, "SESSION_MISMATCH");
+        boolean sessionMismatch = normalizedSessionId != null && !normalizedSessionId.equals(old.getSessionId());
+        boolean ipMismatch = bindToIp && isValueMismatch(old.getIp(), ip);
+        boolean uaMismatch = bindToUserAgent && isValueMismatch(old.getUserAgent(), normalizedUserAgent);
+
+        if (sessionMismatch || ipMismatch || uaMismatch) {
+            if (sessionMismatch && ipMismatch && uaMismatch) {
+                markCompromisedAndKillAllSessionsOnce(old.getUserId(), now, mismatchReason(sessionMismatch, ipMismatch, uaMismatch));
+            } else {
+                markCompromisedAndKillSessionOnce(old.getUserId(), old.getSessionId(), now, mismatchReason(sessionMismatch, ipMismatch, uaMismatch));
+            }
             throw new RefreshTokenReuseDetectedException();
         }
-        if (revoke_detect && old.isRevoked()) {
+        if (revokeDetect && old.isRevoked()) {
             if (old.getRevokedAt() != null
                     && old.getReplacedByTokenHash() != null
                     && Duration.between(old.getRevokedAt(), now).compareTo(reuseGrace) <= 0) {
-
-                old.setLastUsedAt(now);
-                return new RotateResult(null, old.getUserId(), old.getSessionId());
+                if (sameAttempt(old, normalizedAttemptId, now)) {
+                    old.setLastUsedAt(now);
+                    return new RotateResult(
+                            refreshReplayCrypto.decrypt(old.getRotationResultTokenCipher()),
+                            old.getUserId(),
+                            old.getSessionId()
+                    );
+                }
+                throw new RefreshTokenAlreadyProcessedException();
+            }
+            if (old.getRevokedAt() != null
+                    && old.getReplacedByTokenHash() != null
+                    && old.getRotationResultExpiresAt() != null
+                    && old.getRotationResultExpiresAt().isAfter(now)) {
+                throw new RefreshTokenAlreadyProcessedException();
             }
 
             markCompromisedAndKillSessionOnce(old.getUserId(), old.getSessionId(), now, "REUSE_DETECTED");
             throw new RefreshTokenReuseDetectedException();
         }
 
-        var result = createSession(old.getUserId(), old.getSessionId(), ip, userAgent);
+        var result = createSession(old.getUserId(), old.getSessionId(), ip, normalizedUserAgent);
 
         var newHash = refreshTokenCrypto.hash(result);
 
-        if(!revoke_detect){
+        if(!revokeDetect){
             refreshTokenRepository.deleteById(old.getId());
         }else {
             old.setRevoked(true);
             old.setRevokedAt(now);
             old.setReplacedByTokenHash(newHash);
             old.setLastUsedAt(now);
+            old.setRotationAttemptId(normalizedAttemptId);
+            old.setRotationResultTokenCipher(normalizedAttemptId == null ? null : refreshReplayCrypto.encrypt(result));
+            old.setRotationResultExpiresAt(normalizedAttemptId == null ? null : now.plus(reuseGrace));
         }
 
         return new RotateResult(result, old.getUserId(), old.getSessionId());
@@ -121,7 +158,7 @@ public class RefreshTokenService {
     @Transactional
     public void revokeByRawToken(String rawRefreshToken) {
         String hash = refreshTokenCrypto.hash(rawRefreshToken);
-        if(!revoke_detect){
+        if(!revokeDetect){
             refreshTokenRepository.deleteByTokenHash(hash);
             return;
         }
@@ -139,7 +176,7 @@ public class RefreshTokenService {
 
     @Transactional
     public void revokeAllByUserId(Long userId, Instant now) {
-        if(!revoke_detect){
+        if(!revokeDetect){
             refreshTokenRepository.deleteAllByUserId(userId);
         }else{
             refreshTokenRepository.revokeAllActiveByUserId(userId, now);
@@ -153,7 +190,7 @@ public class RefreshTokenService {
 
     @Transactional
     public void revokeAllActiveByUserIdAndSessionId(Long userId, String sessionId, Instant now) {
-        if(!revoke_detect){
+        if(!revokeDetect){
             refreshTokenRepository.deleteAllByUserIdAndSessionId(userId, sessionId);
         }else {
             refreshTokenRepository.revokeAllActiveByUserIdAndSessionId(userId, sessionId, now);
@@ -164,7 +201,7 @@ public class RefreshTokenService {
         int first = refreshTokenRepository.markSessionCompromisedOnce(userId, sessionId, now, reason);
 
         if (first > 0) {
-            if (revoke_detect) {
+            if (revokeDetect) {
                 refreshTokenRepository.revokeAllActiveByUserIdAndSessionId(userId, sessionId, now);
             } else {
                 refreshTokenRepository.deleteAllByUserIdAndSessionId(userId, sessionId);
@@ -176,11 +213,67 @@ public class RefreshTokenService {
         int first = refreshTokenRepository.markAllSessionsCompromisedOnce(userId, now, reason);
 
         if (first > 0) {
-            if (revoke_detect) {
+            if (revokeDetect) {
                 refreshTokenRepository.revokeAllActiveByUserId(userId, now);
             } else {
                 refreshTokenRepository.deleteAllByUserId(userId);
             }
         }
+    }
+
+    private String normalizeAttemptId(String refreshAttemptId) {
+        if (refreshAttemptId == null || refreshAttemptId.isBlank()) {
+            return null;
+        }
+        return refreshAttemptId.trim();
+    }
+
+    private String normalizeSessionId(String sessionId) {
+        if (sessionId == null || sessionId.isBlank()) {
+            return null;
+        }
+        return sessionId.trim();
+    }
+
+    private String normalizeUserAgent(String userAgent) {
+        if (userAgent == null || userAgent.isBlank()) {
+            return UNKNOWN_USER_AGENT;
+        }
+        return userAgent.trim();
+    }
+
+    private boolean isValueMismatch(String actual, String candidate) {
+        return actual != null && candidate != null && !actual.equals(candidate);
+    }
+
+    private String mismatchReason(boolean sessionMismatch, boolean ipMismatch, boolean uaMismatch) {
+        StringBuilder reason = new StringBuilder();
+        if (sessionMismatch) {
+            reason.append("SESSION");
+        }
+        if (ipMismatch) {
+            appendReasonSeparator(reason);
+            reason.append("IP");
+        }
+        if (uaMismatch) {
+            appendReasonSeparator(reason);
+            reason.append("UA");
+        }
+        reason.append("_MISMATCH");
+        return reason.toString();
+    }
+
+    private void appendReasonSeparator(StringBuilder reason) {
+        if (!reason.isEmpty()) {
+            reason.append('_');
+        }
+    }
+
+    private boolean sameAttempt(RefreshToken refreshToken, String refreshAttemptId, Instant now) {
+        return refreshAttemptId != null
+                && refreshAttemptId.equals(refreshToken.getRotationAttemptId())
+                && refreshToken.getRotationResultTokenCipher() != null
+                && refreshToken.getRotationResultExpiresAt() != null
+                && !refreshToken.getRotationResultExpiresAt().isBefore(now);
     }
 }

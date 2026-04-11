@@ -1,6 +1,6 @@
 package com.project.budget_manager.security.jobs;
 
-import com.project.budget_manager.security.config.RefreshTokenCleanupProperties;
+import com.project.budget_manager.security.config.AppSecurityProperties;
 import com.project.budget_manager.security.repository.RefreshTokenRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -16,14 +16,14 @@ import java.time.Instant;
 public class RefreshTokenCleanupJob {
 
     private final RefreshTokenRepository refreshTokenRepository;
-    private final RefreshTokenCleanupProperties props;
+    private final AppSecurityProperties props;
 
     @Scheduled(cron = "${app.security.refresh.cleanup.cron}")
     @Transactional
     public void cleanup() {
-        if (!props.enabled()) return;
+        if (!props.refresh().cleanup().enabled()) return;
 
-        Instant cutoff = Instant.now().minus(props.retention());
+        Instant cutoff = Instant.now().minus(props.refresh().cleanup().retention());
         int deleted = refreshTokenRepository.deleteExpiredBefore(cutoff);
 
         if (deleted > 0) {

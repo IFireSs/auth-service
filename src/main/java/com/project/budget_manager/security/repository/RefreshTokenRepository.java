@@ -13,6 +13,7 @@ import java.util.List;
 import java.util.Optional;
 
 public interface RefreshTokenRepository extends JpaRepository<RefreshToken, Long> {
+    boolean existsByUserIdAndSessionIdAndRevokedFalseAndExpiresAtAfter(Long userId, String sessionId, Instant now);
 
     @Modifying(flushAutomatically = true, clearAutomatically = true)
     @Query("""
