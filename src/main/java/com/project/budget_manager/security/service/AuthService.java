@@ -3,9 +3,9 @@ package com.project.budget_manager.security.service;
 import com.project.budget_manager.security.api.dto.SessionResponse;
 import com.project.budget_manager.security.entity.RefreshToken;
 import com.project.budget_manager.security.exceptions.BadCredentialsException;
-import com.project.budget_manager.security.port.AuthUser;
-import com.project.budget_manager.security.port.AuthUserProvider;
-import com.project.budget_manager.security.port.AuthUserRegistrar;
+import com.project.budget_manager.security.port.dto.AuthUser;
+import com.project.budget_manager.security.port.IAuthUserProvider;
+import com.project.budget_manager.security.port.IAuthUserRegistrar;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.authentication.AuthenticationManager;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
@@ -21,8 +21,8 @@ import java.util.List;
 public class AuthService {
 
     private final PasswordEncoder passwordEncoder;
-    private final AuthUserRegistrar authUserRegistrar;
-    private final AuthUserProvider authUserProvider;
+    private final IAuthUserRegistrar authUserRegistrar;
+    private final IAuthUserProvider authUserProvider;
     private final AuthenticationManager authenticationManager;
     private final RefreshTokenService refreshTokenService;
     private final AccessTokenService accessTokenService;
@@ -72,8 +72,15 @@ public class AuthService {
     public AuthResult refresh(String rawRefreshToken,
                        String ip,
                        String userAgent,
-                       String sessionId) {
-        RefreshTokenService.RotateResult rotateResult = refreshTokenService.rotate(rawRefreshToken, ip, userAgent, sessionId);
+                       String sessionId,
+                       String refreshAttemptId) {
+        RefreshTokenService.RotateResult rotateResult = refreshTokenService.rotate(
+                rawRefreshToken,
+                ip,
+                userAgent,
+                sessionId,
+                refreshAttemptId
+        );
 
         Long userId = rotateResult.userId();
         AuthUser authUser = authUserProvider.findById(userId).orElseThrow(BadCredentialsException::new);
@@ -86,6 +93,16 @@ public class AuthService {
             return;
         }
         refreshTokenService.revokeByRawToken(rawRefreshToken);
+    }
+
+    public void logout(String rawRefreshToken, JwtSession jwtSession) {
+        if (rawRefreshToken != null) {
+            refreshTokenService.revokeByRawToken(rawRefreshToken);
+            return;
+        }
+        if (jwtSession != null) {
+            refreshTokenService.revokeAllActiveByUserIdAndSessionId(jwtSession.userId(), jwtSession.sessionId(), Instant.now());
+        }
     }
 
     public void logoutAll(Number userId){
@@ -107,5 +124,8 @@ public class AuthService {
                 .expiresAt(refreshToken.getExpiresAt())
                 .build()).toList();
 
+    }
+
+    public record JwtSession(Long userId, String sessionId) {
     }
 }

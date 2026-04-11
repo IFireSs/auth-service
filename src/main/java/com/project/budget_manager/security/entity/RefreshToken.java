@@ -65,4 +65,13 @@ public class RefreshToken {
 
     @Column(name = "compromised_reason")
     private String compromisedReason;
+
+    @Column(name = "rotation_attempt_id")
+    private String rotationAttemptId;
+
+    @Column(name = "rotation_result_token_cipher")
+    private String rotationResultTokenCipher;
+
+    @Column(name = "rotation_result_expires_at")
+    private Instant rotationResultExpiresAt;
 }

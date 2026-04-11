@@ -1,0 +1,529 @@
+openapi: 3.1.0
+info:
+  title: Budget Manager API
+  version: 1.0.0
+  summary: Аутентификация и вспомогательное API Budget Manager
+  description: |
+    Канонический API-контракт для текущего backend.
+
+    Модель аутентификации:
+    - Access token возвращается в теле ответа как `accessToken`.
+    - Refresh token хранится в HttpOnly cookie `refresh_token`.
+    - Идентификатор refresh-сессии хранится в HttpOnly cookie `session_id`.
+    - Для cookie-аутентифицированных эндпоинтов требуется CSRF-защита. Клиент должен сначала вызвать
+      `GET /api/v1/auth/csrf`, затем отправить полученный токен в заголовке `X-XSRF-TOKEN` вместе
+      с cookie `XSRF-TOKEN`.
+    - `X-Refresh-Attempt-Id` настоятельно рекомендуется для `/api/v1/auth/refresh`. Повторное
+      использование того же значения при сетевом retry позволяет backend безопасно повторить
+      результат того же refresh-запроса.
+
+servers:
+  - url: http://localhost:8080
+    description: Локальная разработка
+
+tags:
+  - name: Auth
+    description: Аутентификация, refresh, logout и управление сессиями
+  - name: Internal
+    description: Текущие вспомогательные эндпоинты, существующие в backend, но не являющиеся основной частью продуктового API
+
+paths:
+  /api/v1/auth/csrf:
+    get:
+      tags: [Auth]
+      summary: Получить CSRF-токен
+      description: |
+        Возвращает CSRF-токен в теле ответа и выставляет cookie `XSRF-TOKEN`.
+        Обязателен перед вызовами cookie-аутентифицированных эндпоинтов, таких как register, login, refresh и logout.
+      operationId: getCsrfToken
+      responses:
+        '200':
+          description: CSRF-токен выдан
+          headers:
+            Set-Cookie:
+              $ref: '#/components/headers/XsrfCookie'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CsrfTokenResponse'
+              examples:
+                default:
+                  value:
+                    token: 6dbM0Lx4rG6uN6m8oS2P7YvJYf9r1w7o5i4V3f8b2Q0h1L7p9n3r6t2a4z8x0c5d
+
+  /api/v1/auth/register:
+    post:
+      tags: [Auth]
+      summary: Зарегистрировать пользователя
+      description: |
+        Создает новую учетную запись пользователя, возвращает access token и выставляет refresh cookies.
+
+        Требования по CSRF:
+        - `XSRF-TOKEN` cookie
+        - заголовок `X-XSRF-TOKEN` с соответствующим CSRF-токеном
+      operationId: register
+      parameters:
+        - $ref: '#/components/parameters/UserAgentHeader'
+        - $ref: '#/components/parameters/XsrfHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+      responses:
+        '200':
+          description: Регистрация выполнена успешно
+          headers:
+            Set-Cookie:
+              $ref: '#/components/headers/AuthCookies'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenResponse'
+        '401':
+          description: Ошибка auth-уровня, возвращаемая backend
+          headers:
+            Set-Cookie:
+              $ref: '#/components/headers/ClearedAuthCookies'
+          content:
+            text/plain:
+              schema:
+                type: string
+        '403':
+          description: Отсутствует или невалиден CSRF-токен
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Username или email уже существуют
+          headers:
+            Set-Cookie:
+              $ref: '#/components/headers/ClearedAuthCookies'
+          content:
+            text/plain:
+              schema:
+                type: string
+                enum: [conflict]
+
+  /api/v1/auth/login:
+    post:
+      tags: [Auth]
+      summary: Выполнить вход пользователя
+      description: |
+        Аутентифицирует пользователя, возвращает access token и выставляет refresh cookies.
+
+        Требования по CSRF:
+        - `XSRF-TOKEN` cookie
+        - заголовок `X-XSRF-TOKEN`
+      operationId: login
+      parameters:
+        - $ref: '#/components/parameters/UserAgentHeader'
+        - $ref: '#/components/parameters/XsrfHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Вход выполнен успешно
+          headers:
+            Set-Cookie:
+              $ref: '#/components/headers/AuthCookies'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenResponse'
+        '401':
+          description: Неверные учетные данные
+          headers:
+            Set-Cookie:
+              $ref: '#/components/headers/ClearedAuthCookies'
+          content:
+            text/plain:
+              schema:
+                type: string
+                enum: ['Invalid credentials']
+        '403':
+          description: Отсутствует или невалиден CSRF-токен
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/auth/refresh:
+    post:
+      tags: [Auth]
+      summary: Обновить access token
+      description: |
+        Ротирует refresh token и возвращает новый access token.
+
+        Обязательные cookies:
+        - `refresh_token`
+        - `session_id`
+        - `XSRF-TOKEN`
+
+        Заголовки:
+        - `X-XSRF-TOKEN` is required
+        - `X-Refresh-Attempt-Id` настоятельно рекомендуется
+
+        Использование `X-Refresh-Attempt-Id`:
+        - Генерируйте новый UUID для каждой логической попытки refresh.
+        - Повторно используйте то же значение только при повторе того же запроса из-за timeout/network retry.
+        - Если тот же старый refresh token повторно отправлен с другим attempt id в течение короткого grace-периода,
+          backend вернет `409 Refresh already processed by another request`.
+      operationId: refresh
+      parameters:
+        - $ref: '#/components/parameters/UserAgentHeader'
+        - $ref: '#/components/parameters/XsrfHeader'
+        - $ref: '#/components/parameters/RefreshAttemptIdHeader'
+      responses:
+        '200':
+          description: Access token обновлен, refresh token ротирован
+          headers:
+            Set-Cookie:
+              $ref: '#/components/headers/RefreshCookie'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenResponse'
+        '401':
+          description: Невалидный refresh token, истекший token, обнаружен reuse refresh token или отсутствует refresh cookie
+          headers:
+            Set-Cookie:
+              $ref: '#/components/headers/ClearedAuthCookies'
+          content:
+            text/plain:
+              schema:
+                type: string
+                enum:
+                  - Invalid refresh token
+                  - Refresh token expired
+                  - Reuse detected, all sessions revoked
+        '403':
+          description: Отсутствует или невалиден CSRF-токен
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Другой запрос уже ротировал тот же refresh token в пределах idempotency grace-периода
+          content:
+            text/plain:
+              schema:
+                type: string
+                enum: ['Refresh already processed by another request']
+
+  /api/v1/auth/logout:
+    post:
+      tags: [Auth]
+      summary: Выйти из текущей refresh-сессии
+      description: |
+        Отзывает текущий refresh token и очищает auth cookies.
+
+        Требования по CSRF:
+        - `XSRF-TOKEN` cookie
+        - заголовок `X-XSRF-TOKEN`
+      operationId: logout
+      parameters:
+        - $ref: '#/components/parameters/XsrfHeader'
+      responses:
+        '204':
+          description: Выход выполнен успешно
+          headers:
+            Set-Cookie:
+              $ref: '#/components/headers/ClearedAuthCookies'
+        '403':
+          description: Отсутствует или невалиден CSRF-токен
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/auth/logout-all:
+    post:
+      tags: [Auth]
+      summary: Выйти из всех refresh-сессий
+      description: Отзывает все refresh-сессии для аутентифицированного пользователя и очищает auth cookies на текущем клиенте.
+      operationId: logoutAll
+      security:
+        - bearerAuth: []
+      responses:
+        '204':
+          description: Все refresh-сессии отозваны
+          headers:
+            Set-Cookie:
+              $ref: '#/components/headers/ClearedAuthCookies'
+        '401':
+          description: Отсутствует или невалиден bearer token
+
+  /api/v1/auth/logout-session/{sessionId}:
+    post:
+      tags: [Auth]
+      summary: Выйти из конкретной refresh-сессии
+      description: |
+        Отзывает все refresh token для выбранного session id аутентифицированного пользователя.
+        Если запрошенный session id совпадает с текущей сессией, auth cookies также очищаются.
+      operationId: logoutSession
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '204':
+          description: Сессия отозвана
+          headers:
+            Set-Cookie:
+              $ref: '#/components/headers/ClearedAuthCookies'
+        '401':
+          description: Отсутствует или невалиден bearer token
+
+  /api/v1/auth/sessions:
+    get:
+      tags: [Auth]
+      summary: Получить список активных refresh-сессий
+      operationId: listSessions
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Активные сессии возвращены
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/SessionResponse'
+        '401':
+          description: Отсутствует или невалиден bearer token
+
+  /api/v1/me:
+    get:
+      tags: [Internal]
+      summary: Вернуть payload текущего JWT principal
+      description: Вспомогательный эндпоинт для ручных проверок.
+      operationId: getCurrentPrincipal
+      x-internal: true
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Payload principal
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MeResponse'
+        '401':
+          description: Отсутствует или невалиден bearer token
+
+  /api/v1/role:
+    get:
+      tags: [Internal]
+      summary: Вернуть роли для user id
+      description: Вспомогательный эндпоинт для ручных проверок.
+      operationId: getRolesByUserId
+      x-internal: true
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: query
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        '200':
+          description: Роли возвращены
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Role'
+        '401':
+          description: Отсутствует или невалиден bearer token
+
+  /api/v1/ping:
+    get:
+      tags: [Internal]
+      summary: Ping-эндпоинт
+      description: Вспомогательный эндпоинт для ручных проверок.
+      operationId: ping
+      x-internal: true
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Ping выполнен успешно
+        '401':
+          description: Отсутствует или невалиден bearer token
+        '403':
+          description: Аутентифицированный пользователь не имеет требуемой authority
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    UserAgentHeader:
+      name: User-Agent
+      in: header
+      required: false
+      schema:
+        type: string
+      description: Строка user agent клиента, сохраняемая в метаданных refresh-сессии.
+    XsrfHeader:
+      name: X-XSRF-TOKEN
+      in: header
+      required: true
+      schema:
+        type: string
+      description: CSRF-токен, возвращаемый `GET /api/v1/auth/csrf`.
+    RefreshAttemptIdHeader:
+      name: X-Refresh-Attempt-Id
+      in: header
+      required: false
+      schema:
+        type: string
+        format: uuid
+      description: |
+        Настоятельно рекомендуемый idempotency key для refresh.
+        Повторно используйте то же значение только при retry того же логического refresh-запроса.
+
+  headers:
+    XsrfCookie:
+      description: Cookie `XSRF-TOKEN`, выдаваемая для последующих CSRF-защищенных запросов.
+      schema:
+        type: string
+      example: XSRF-TOKEN=56259e47-544b-407c-ad57-ec0fdc76fb52; Path=/
+    RefreshCookie:
+      description: Ротированная cookie `refresh_token`.
+      schema:
+        type: string
+      example: refresh_token=abcdef123456; Path=/api/v1/auth; Max-Age=1209600; Expires=Sat, 25 Apr 2026 15:08:18 GMT; HttpOnly; Secure; SameSite=Lax
+    AuthCookies:
+      description: Cookies refresh-сессии, выставляемые при login или registration.
+      schema:
+        type: string
+      example: refresh_token=abcdef123456; Path=/api/v1/auth; Max-Age=1209600; Expires=Sat, 25 Apr 2026 15:08:18 GMT; HttpOnly; Secure; SameSite=Lax, session_id=1f3a3b1e-2b31-4f78-8f2e-2ff0d4cb3fbc; Path=/api/v1/auth; Max-Age=1209600; Expires=Sat, 25 Apr 2026 15:08:18 GMT; HttpOnly; Secure; SameSite=Lax
+    ClearedAuthCookies:
+      description: Auth cookies, очищаемые backend.
+      schema:
+        type: string
+      example: refresh_token=; Path=/api/v1/auth; Max-Age=0; HttpOnly; Secure; SameSite=Lax, session_id=; Path=/api/v1/auth; Max-Age=0; HttpOnly; Secure; SameSite=Lax
+
+  schemas:
+    LoginRequest:
+      type: object
+      additionalProperties: false
+      required: [username, password]
+      properties:
+        username:
+          type: string
+          minLength: 1
+        password:
+          type: string
+          minLength: 1
+
+    RegisterRequest:
+      type: object
+      additionalProperties: false
+      required: [username, password, email]
+      properties:
+        username:
+          type: string
+          minLength: 3
+          maxLength: 64
+        password:
+          type: string
+          minLength: 8
+          maxLength: 72
+        email:
+          type: string
+          maxLength: 128
+
+    TokenResponse:
+      type: object
+      additionalProperties: false
+      required: [accessToken]
+      properties:
+        accessToken:
+          type: string
+          description: Подписанный JWT access token.
+
+    SessionResponse:
+      type: object
+      additionalProperties: false
+      required: [sessionId, userAgent, createdAt, expiresAt]
+      properties:
+        sessionId:
+          type: string
+        ip:
+          type: string
+          nullable: true
+        userAgent:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        lastUsedAt:
+          type: string
+          format: date-time
+          nullable: true
+        expiresAt:
+          type: string
+          format: date-time
+
+    CsrfTokenResponse:
+      type: object
+      additionalProperties: false
+      required: [token]
+      properties:
+        token:
+          type: string
+
+    ErrorResponse:
+      type: object
+      additionalProperties: true
+      required: [timestamp, status, error, path]
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+        status:
+          type: integer
+        error:
+          type: string
+        path:
+          type: string
+
+    MeResponse:
+      type: object
+      additionalProperties: false
+      required: [username, uid, roles]
+      properties:
+        username:
+          type: string
+        uid:
+          type: integer
+          format: int64
+        roles:
+          type: array
+          items:
+            $ref: '#/components/schemas/Role'
+
+    Role:
+      type: string
+      enum:
+        - USER

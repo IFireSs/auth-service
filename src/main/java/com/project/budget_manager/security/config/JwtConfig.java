@@ -1,11 +1,13 @@
 package com.project.budget_manager.security.config;
 
 import com.nimbusds.jose.jwk.source.ImmutableSecret;
-import org.springframework.beans.factory.annotation.Value;
+import com.project.budget_manager.security.service.AccessTokenStateValidator;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.security.oauth2.core.DelegatingOAuth2TokenValidator;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.security.oauth2.jwt.JwtEncoder;
+import org.springframework.security.oauth2.jwt.JwtValidators;
 import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
 import org.springframework.security.oauth2.jwt.NimbusJwtEncoder;
 
@@ -17,8 +19,8 @@ import java.nio.charset.StandardCharsets;
 public class JwtConfig {
 
     @Bean
-    public SecretKey jwtSecretKey(@Value("${app.security.jwt.secret}") String secret) {
-        return new SecretKeySpec(secret.getBytes(StandardCharsets.UTF_8), "HmacSHA256");
+    public SecretKey jwtSecretKey(AppSecurityProperties securityProperties) {
+        return new SecretKeySpec(securityProperties.jwt().secret().getBytes(StandardCharsets.UTF_8), "HmacSHA256");
     }
 
     @Bean
@@ -27,7 +29,14 @@ public class JwtConfig {
     }
 
     @Bean
-    public JwtDecoder jwtDecoder(SecretKey secretKey){
-        return NimbusJwtDecoder.withSecretKey(secretKey).build();
+    public JwtDecoder jwtDecoder(SecretKey secretKey,
+                                 AccessTokenStateValidator accessTokenStateValidator,
+                                 AppSecurityProperties securityProperties){
+        NimbusJwtDecoder decoder = NimbusJwtDecoder.withSecretKey(secretKey).build();
+        decoder.setJwtValidator(new DelegatingOAuth2TokenValidator<>(
+                JwtValidators.createDefaultWithIssuer(securityProperties.accessToken().issuer()),
+                accessTokenStateValidator
+        ));
+        return decoder;
     }
 }

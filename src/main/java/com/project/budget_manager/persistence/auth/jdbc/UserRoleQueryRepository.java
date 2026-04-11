@@ -1,4 +1,4 @@
-package com.project.budget_manager.persistence.auth;
+package com.project.budget_manager.persistence.auth.jdbc;
 
 import com.project.budget_manager.security.enums.Role;
 import lombok.RequiredArgsConstructor;
@@ -7,6 +7,7 @@ import org.springframework.stereotype.Repository;
 
 import java.util.List;
 
+@Deprecated
 @Repository
 @RequiredArgsConstructor
 public class UserRoleQueryRepository {
@@ -21,7 +22,7 @@ public class UserRoleQueryRepository {
         );
 
         return raw.stream()
-                .map(Role::fromAuthority)
+                .map(Role::valueOf)
                 .toList();
     }
 }

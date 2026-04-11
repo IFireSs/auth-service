@@ -3,8 +3,9 @@ package com.project.budget_manager.persistence.auth;
 import com.project.budget_manager.entity.User;
 import com.project.budget_manager.repository.UserRepository;
 import com.project.budget_manager.security.enums.Role;
-import com.project.budget_manager.security.port.AuthUser;
-import com.project.budget_manager.security.port.AuthUserProvider;
+import com.project.budget_manager.security.port.dto.AuthUser;
+import com.project.budget_manager.security.port.IAuthUserProvider;
+import com.project.budget_manager.security.repository.UserRoleRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
@@ -15,9 +16,9 @@ import java.util.Optional;
 @Component
 @RequiredArgsConstructor
 @Transactional(readOnly = true)
-public class JpaAuthUserProvider implements AuthUserProvider {
+public class AuthUserProviderImpl implements IAuthUserProvider {
     private final UserRepository userRepository;
-    private final UserRoleQueryRepository userRoleQueryRepository;
+    private final UserRoleRepository userRoleRepository;
 
     @Override
     public Optional<AuthUser> findByUsername(String username) {
@@ -27,7 +28,7 @@ public class JpaAuthUserProvider implements AuthUserProvider {
         }
         User user = userOptional.get();
         Long userId = user.getId();
-        List<Role> roles = userRoleQueryRepository.findRolesByUserId(userId);
+        List<Role> roles = userRoleRepository.findRolesByUserId(userId);
         return Optional.of(new AuthUser(userId, user.getUsername(), user.getPasswordHash(), roles));
     }
 
@@ -38,7 +39,7 @@ public class JpaAuthUserProvider implements AuthUserProvider {
             return Optional.empty();
         }
         User user = userOptional.get();
-        List<Role> roles = userRoleQueryRepository.findRolesByUserId(userId);
+        List<Role> roles = userRoleRepository.findRolesByUserId(userId);
         return Optional.of(new AuthUser(userId, user.getUsername(), user.getPasswordHash(), roles));
     }
 }

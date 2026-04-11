@@ -1,5 +1,6 @@
 package com.project.budget_manager.security.service;
 
+import com.project.budget_manager.security.config.AppSecurityProperties;
 import com.project.budget_manager.security.enums.Role;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.oauth2.jose.jws.MacAlgorithm;
@@ -17,18 +18,19 @@ import java.util.List;
 @RequiredArgsConstructor
 public class AccessTokenService {
     private final JwtEncoder jwtEncoder;
+    private final AppSecurityProperties securityProperties;
 
     public String issueAccessToken(Long userId, String username, Collection<Role> roles, String sessionId) {
 
         Instant now = Instant.now();
         List<String> stringRoles = roles.stream()
-                .map(Role::authority)
+                .map(Role::name)
                 .toList();
 
         var claims = JwtClaimsSet.builder()
-                .issuer("budget-manager")
+                .issuer(securityProperties.accessToken().issuer())
                 .issuedAt(now)
-                .expiresAt(now.plusSeconds(600))
+                .expiresAt(now.plus(securityProperties.accessToken().ttl()))
                 .subject(username)
                 .claim("uid", userId)
                 .claim("roles", stringRoles)
