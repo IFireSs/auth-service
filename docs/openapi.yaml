@@ -1,10 +1,10 @@
-openapi: 3.1.0
+﻿openapi: 3.1.0
 info:
-  title: Budget Manager API
+  title: API сервиса аутентификации
   version: 1.0.0
-  summary: Аутентификация и вспомогательное API Budget Manager
+  summary: Аутентификация и вспомогательное API сервиса auth-service
   description: |
-    Канонический API-контракт для текущего backend.
+    Канонический API-контракт для текущего backend-сервиса.
 
     Модель аутентификации:
     - Access token возвращается в теле ответа как `accessToken`.
@@ -17,20 +17,42 @@ info:
       использование того же значения при сетевом retry позволяет backend безопасно повторить
       результат того же refresh-запроса.
 
+    Политика Origin для браузерных запросов:
+    - `allowedOrigins` в настройках auth client является источником истины для CORS.
+    - Браузерные запросы с заголовком `Origin` разрешены только если origin принадлежит включенному auth client.
+    - Запросы регистрации и входа дополнительно требуют, чтобы `Origin` принадлежал запрошенному `clientId`.
+    - Refresh-запросы требуют, чтобы `Origin` принадлежал client, сохраненному в refresh-сессии.
+    - Bearer-запросы требуют, чтобы `Origin` принадлежал claim `client_id` в access token.
+    - Запросы без `Origin` считаются небраузерными/server-to-server запросами и не блокируются политикой Origin.
+
 servers:
   - url: http://localhost:8080
     description: Локальная разработка
 
 tags:
-  - name: Auth
+  - name: Аутентификация
     description: Аутентификация, refresh, logout и управление сессиями
-  - name: Internal
-    description: Текущие вспомогательные эндпоинты, существующие в backend, но не являющиеся основной частью продуктового API
+  - name: Администрирование
+    description: Управление пользователями, ролями и сессиями
 
 paths:
+  /.well-known/jwks.json:
+    get:
+      tags: [Аутентификация]
+      summary: Публичный JWKS
+      description: Публичные RSA-ключи, используемые resource-сервисами для проверки RS256 access tokens.
+      operationId: getJwks
+      responses:
+        '200':
+          description: JWKS с публичными ключами подписи
+          content:
+            application/json:
+              schema:
+                type: object
+
   /api/v1/auth/csrf:
     get:
-      tags: [Auth]
+      tags: [Аутентификация]
       summary: Получить CSRF-токен
       description: |
         Возвращает CSRF-токен в теле ответа и выставляет cookie `XSRF-TOKEN`.
@@ -53,7 +75,7 @@ paths:
 
   /api/v1/auth/register:
     post:
-      tags: [Auth]
+      tags: [Аутентификация]
       summary: Зарегистрировать пользователя
       description: |
         Создает новую учетную запись пользователя, возвращает access token и выставляет refresh cookies.
@@ -64,6 +86,7 @@ paths:
       operationId: register
       parameters:
         - $ref: '#/components/parameters/UserAgentHeader'
+        - $ref: '#/components/parameters/OriginHeader'
         - $ref: '#/components/parameters/XsrfHeader'
       requestBody:
         required: true
@@ -81,35 +104,44 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/TokenResponse'
+        '400':
+          description: Неизвестный или отключенный auth client
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiErrorResponse'
         '401':
           description: Ошибка auth-уровня, возвращаемая backend
           headers:
             Set-Cookie:
               $ref: '#/components/headers/ClearedAuthCookies'
           content:
-            text/plain:
+            application/json:
               schema:
-                type: string
+                $ref: '#/components/schemas/ApiErrorResponse'
         '403':
-          description: Отсутствует или невалиден CSRF-токен
+          description: CSRF-токен отсутствует/невалиден или Origin запроса не разрешен для запрошенного auth client.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                oneOf:
+                  - $ref: '#/components/schemas/ErrorResponse'
+                  - $ref: '#/components/schemas/ApiErrorResponse'
         '409':
           description: Username или email уже существуют
           headers:
             Set-Cookie:
               $ref: '#/components/headers/ClearedAuthCookies'
           content:
-            text/plain:
+            application/json:
               schema:
-                type: string
-                enum: [conflict]
+                $ref: '#/components/schemas/ApiErrorResponse'
+        '429':
+          $ref: '#/components/responses/RateLimitExceeded'
 
   /api/v1/auth/login:
     post:
-      tags: [Auth]
+      tags: [Аутентификация]
       summary: Выполнить вход пользователя
       description: |
         Аутентифицирует пользователя, возвращает access token и выставляет refresh cookies.
@@ -120,6 +152,7 @@ paths:
       operationId: login
       parameters:
         - $ref: '#/components/parameters/UserAgentHeader'
+        - $ref: '#/components/parameters/OriginHeader'
         - $ref: '#/components/parameters/XsrfHeader'
       requestBody:
         required: true
@@ -137,26 +170,37 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/TokenResponse'
+        '400':
+          description: Неизвестный или отключенный auth client
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiErrorResponse'
         '401':
           description: Неверные учетные данные
           headers:
             Set-Cookie:
               $ref: '#/components/headers/ClearedAuthCookies'
           content:
-            text/plain:
+            application/json:
               schema:
-                type: string
-                enum: ['Invalid credentials']
+                $ref: '#/components/schemas/ApiErrorResponse'
         '403':
-          description: Отсутствует или невалиден CSRF-токен
+          description: CSRF-токен отсутствует/невалиден или Origin запроса не разрешен для запрошенного auth client.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                oneOf:
+                  - $ref: '#/components/schemas/ErrorResponse'
+                  - $ref: '#/components/schemas/ApiErrorResponse'
+        '413':
+          $ref: '#/components/responses/RequestBodyTooLarge'
+        '429':
+          $ref: '#/components/responses/RateLimitExceeded'
 
   /api/v1/auth/refresh:
     post:
-      tags: [Auth]
+      tags: [Аутентификация]
       summary: Обновить access token
       description: |
         Ротирует refresh token и возвращает новый access token.
@@ -167,17 +211,18 @@ paths:
         - `XSRF-TOKEN`
 
         Заголовки:
-        - `X-XSRF-TOKEN` is required
+        - `X-XSRF-TOKEN` обязателен
         - `X-Refresh-Attempt-Id` настоятельно рекомендуется
 
         Использование `X-Refresh-Attempt-Id`:
         - Генерируйте новый UUID для каждой логической попытки refresh.
-        - Повторно используйте то же значение только при повторе того же запроса из-за timeout/network retry.
+        - Повторно используйте то же значение только при повторе того же запроса из-за timeout или сетевого retry.
         - Если тот же старый refresh token повторно отправлен с другим attempt id в течение короткого grace-периода,
-          backend вернет `409 Refresh already processed by another request`.
+          backend вернет `409` с ошибкой о том, что refresh token уже обработан другим запросом.
       operationId: refresh
       parameters:
         - $ref: '#/components/parameters/UserAgentHeader'
+        - $ref: '#/components/parameters/OriginHeader'
         - $ref: '#/components/parameters/XsrfHeader'
         - $ref: '#/components/parameters/RefreshAttemptIdHeader'
       responses:
@@ -185,7 +230,7 @@ paths:
           description: Access token обновлен, refresh token ротирован
           headers:
             Set-Cookie:
-              $ref: '#/components/headers/RefreshCookie'
+              $ref: '#/components/headers/AuthCookies'
           content:
             application/json:
               schema:
@@ -196,30 +241,29 @@ paths:
             Set-Cookie:
               $ref: '#/components/headers/ClearedAuthCookies'
           content:
-            text/plain:
+            application/json:
               schema:
-                type: string
-                enum:
-                  - Invalid refresh token
-                  - Refresh token expired
-                  - Reuse detected, all sessions revoked
+                $ref: '#/components/schemas/ApiErrorResponse'
         '403':
-          description: Отсутствует или невалиден CSRF-токен
+          description: CSRF-токен отсутствует/невалиден или Origin запроса не разрешен для auth client refresh-сессии.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                oneOf:
+                  - $ref: '#/components/schemas/ErrorResponse'
+                  - $ref: '#/components/schemas/ApiErrorResponse'
         '409':
           description: Другой запрос уже ротировал тот же refresh token в пределах idempotency grace-периода
           content:
-            text/plain:
+            application/json:
               schema:
-                type: string
-                enum: ['Refresh already processed by another request']
+                $ref: '#/components/schemas/ApiErrorResponse'
+        '429':
+          $ref: '#/components/responses/RateLimitExceeded'
 
   /api/v1/auth/logout:
     post:
-      tags: [Auth]
+      tags: [Аутентификация]
       summary: Выйти из текущей refresh-сессии
       description: |
         Отзывает текущий refresh token и очищает auth cookies.
@@ -245,7 +289,7 @@ paths:
 
   /api/v1/auth/logout-all:
     post:
-      tags: [Auth]
+      tags: [Аутентификация]
       summary: Выйти из всех refresh-сессий
       description: Отзывает все refresh-сессии для аутентифицированного пользователя и очищает auth cookies на текущем клиенте.
       operationId: logoutAll
@@ -262,7 +306,7 @@ paths:
 
   /api/v1/auth/logout-session/{sessionId}:
     post:
-      tags: [Auth]
+      tags: [Аутентификация]
       summary: Выйти из конкретной refresh-сессии
       description: |
         Отзывает все refresh token для выбранного session id аутентифицированного пользователя.
@@ -287,7 +331,7 @@ paths:
 
   /api/v1/auth/sessions:
     get:
-      tags: [Auth]
+      tags: [Аутентификация]
       summary: Получить список активных refresh-сессий
       operationId: listSessions
       security:
@@ -304,71 +348,524 @@ paths:
         '401':
           description: Отсутствует или невалиден bearer token
 
-  /api/v1/me:
+  /api/v1/admin/users:
     get:
-      tags: [Internal]
-      summary: Вернуть payload текущего JWT principal
-      description: Вспомогательный эндпоинт для ручных проверок.
-      operationId: getCurrentPrincipal
-      x-internal: true
-      security:
-        - bearerAuth: []
-      responses:
-        '200':
-          description: Payload principal
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/MeResponse'
-        '401':
-          description: Отсутствует или невалиден bearer token
-
-  /api/v1/role:
-    get:
-      tags: [Internal]
-      summary: Вернуть роли для user id
-      description: Вспомогательный эндпоинт для ручных проверок.
-      operationId: getRolesByUserId
-      x-internal: true
+      tags: [Администрирование]
+      summary: Получить список пользователей
+      operationId: adminListUsers
       security:
         - bearerAuth: []
       parameters:
-        - name: id
+        - name: limit
           in: query
-          required: true
+          required: false
           schema:
             type: integer
-            format: int64
+            default: 50
+            minimum: 1
+            maximum: 200
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 0
+            minimum: 0
+        - name: query
+          in: query
+          required: false
+          description: Поиск по username/email без учета регистра.
+          schema:
+            type: string
+        - name: role
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/Role'
       responses:
         '200':
-          description: Роли возвращены
+          description: Пользователи возвращены
           content:
             application/json:
               schema:
                 type: array
                 items:
-                  $ref: '#/components/schemas/Role'
+                  $ref: '#/components/schemas/AdminUserResponse'
         '401':
-          description: Отсутствует или невалиден bearer token
+          description: Bearer token отсутствует или невалиден
+        '403':
+          description: Требуется роль ADMIN или SUPER_ADMIN
+        '429':
+          $ref: '#/components/responses/RateLimitExceeded'
 
-  /api/v1/ping:
+  /api/v1/admin/audit-events:
     get:
-      tags: [Internal]
-      summary: Ping-эндпоинт
-      description: Вспомогательный эндпоинт для ручных проверок.
-      operationId: ping
-      x-internal: true
+      tags: [Администрирование]
+      summary: Получить список событий аудита
+      operationId: adminListAuditEvents
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 50
+            minimum: 1
+            maximum: 200
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 0
+            minimum: 0
+        - name: eventType
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/AuditEventType'
+        - name: userId
+          in: query
+          required: false
+          description: Ищет события, где пользователь является actor или target.
+          schema:
+            type: integer
+            format: int64
+        - name: actorUserId
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int64
+        - name: targetUserId
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int64
+        - name: username
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: sessionId
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: ip
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: from
+          in: query
+          required: false
+          description: Включительная нижняя граница для occurredAt.
+          schema:
+            type: string
+            format: date-time
+        - name: to
+          in: query
+          required: false
+          description: Включительная верхняя граница для occurredAt.
+          schema:
+            type: string
+            format: date-time
+      responses:
+        '200':
+          description: События аудита возвращены
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/AuditEventResponse'
+        '401':
+          description: Bearer token отсутствует или невалиден
+        '403':
+          description: Требуется роль ADMIN или SUPER_ADMIN
+        '429':
+          $ref: '#/components/responses/RateLimitExceeded'
+
+  /api/v1/admin/auth-clients:
+    get:
+      tags: [Администрирование]
+      summary: Получить список auth clients
+      operationId: adminListAuthClients
       security:
         - bearerAuth: []
       responses:
         '200':
-          description: Ping выполнен успешно
+          description: Список auth clients возвращен
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/AuthClientResponse'
         '401':
-          description: Отсутствует или невалиден bearer token
+          description: Bearer token отсутствует или невалиден
         '403':
-          description: Аутентифицированный пользователь не имеет требуемой authority
+          description: Требуется роль ADMIN или SUPER_ADMIN
+        '429':
+          $ref: '#/components/responses/RateLimitExceeded'
+    post:
+      tags: [Администрирование]
+      summary: Создать auth client
+      operationId: adminCreateAuthClient
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AuthClientCreateRequest'
+      responses:
+        '200':
+          description: Auth client создан
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthClientResponse'
+        '400':
+          description: Ошибка валидации или невалидный origin auth client
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/ErrorResponse'
+                  - $ref: '#/components/schemas/ApiErrorResponse'
+        '401':
+          description: Bearer token отсутствует или невалиден
+        '403':
+          description: Требуется роль SUPER_ADMIN
+        '409':
+          description: Auth client уже существует
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiErrorResponse'
+        '429':
+          $ref: '#/components/responses/RateLimitExceeded'
+
+  /api/v1/admin/auth-clients/{clientId}:
+    get:
+      tags: [Администрирование]
+      summary: Получить auth client
+      operationId: adminGetAuthClient
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ClientIdPath'
+      responses:
+        '200':
+          description: Auth client возвращен
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthClientResponse'
+        '401':
+          description: Bearer token отсутствует или невалиден
+        '403':
+          description: Требуется роль ADMIN или SUPER_ADMIN
+        '404':
+          description: Auth client не найден
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiErrorResponse'
+        '429':
+          $ref: '#/components/responses/RateLimitExceeded'
+    put:
+      tags: [Администрирование]
+      summary: Обновить auth client
+      operationId: adminUpdateAuthClient
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ClientIdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AuthClientUpdateRequest'
+      responses:
+        '200':
+          description: Auth client обновлен
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthClientResponse'
+        '400':
+          description: Ошибка валидации или невалидный origin auth client
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/ErrorResponse'
+                  - $ref: '#/components/schemas/ApiErrorResponse'
+        '401':
+          description: Bearer token отсутствует или невалиден
+        '403':
+          description: Требуется роль SUPER_ADMIN
+        '404':
+          description: Auth client не найден
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiErrorResponse'
+        '429':
+          $ref: '#/components/responses/RateLimitExceeded'
+
+  /api/v1/admin/auth-clients/{clientId}/enable:
+    post:
+      tags: [Администрирование]
+      summary: Включить auth client
+      operationId: adminEnableAuthClient
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ClientIdPath'
+      responses:
+        '200':
+          description: Auth client включен
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthClientResponse'
+        '401':
+          description: Bearer token отсутствует или невалиден
+        '403':
+          description: Требуется роль SUPER_ADMIN
+        '404':
+          description: Auth client не найден
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiErrorResponse'
+        '429':
+          $ref: '#/components/responses/RateLimitExceeded'
+
+  /api/v1/admin/auth-clients/{clientId}/disable:
+    post:
+      tags: [Администрирование]
+      summary: Отключить auth client
+      operationId: adminDisableAuthClient
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ClientIdPath'
+      responses:
+        '200':
+          description: Auth client отключен
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthClientResponse'
+        '401':
+          description: Bearer token отсутствует или невалиден
+        '403':
+          description: Требуется роль SUPER_ADMIN
+        '404':
+          description: Auth client не найден
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiErrorResponse'
+        '429':
+          $ref: '#/components/responses/RateLimitExceeded'
+
+  /api/v1/admin/users/{userId}:
+    get:
+      tags: [Администрирование]
+      summary: Получить пользователя
+      operationId: adminGetUser
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/UserIdPath'
+      responses:
+        '200':
+          description: Пользователь возвращен
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminUserResponse'
+        '401':
+          description: Bearer token отсутствует или невалиден
+        '403':
+          description: Требуется роль ADMIN или SUPER_ADMIN
+        '404':
+          description: Пользователь не найден
+        '429':
+          $ref: '#/components/responses/RateLimitExceeded'
+
+  /api/v1/admin/users/{userId}/sessions:
+    get:
+      tags: [Администрирование]
+      summary: Получить список сессий пользователя
+      operationId: adminListUserSessions
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/UserIdPath'
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 50
+            minimum: 1
+            maximum: 200
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 0
+            minimum: 0
+        - name: status
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/SessionStatus'
+      responses:
+        '200':
+          description: Сессии возвращены
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/SessionResponse'
+        '401':
+          description: Bearer token отсутствует или невалиден
+        '403':
+          description: Требуется роль ADMIN или SUPER_ADMIN
+        '404':
+          description: Пользователь не найден
+        '429':
+          $ref: '#/components/responses/RateLimitExceeded'
+
+  /api/v1/admin/users/{userId}/logout-all:
+    post:
+      tags: [Администрирование]
+      summary: Отозвать все сессии пользователя
+      operationId: adminLogoutUserEverywhere
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/UserIdPath'
+      responses:
+        '204':
+          description: Сессии пользователя отозваны
+        '401':
+          description: Bearer token отсутствует или невалиден
+        '403':
+          description: Требуется роль ADMIN или SUPER_ADMIN
+        '404':
+          description: Пользователь не найден
+        '429':
+          $ref: '#/components/responses/RateLimitExceeded'
+
+  /api/v1/admin/users/{userId}/sessions/{sessionId}/revoke:
+    post:
+      tags: [Администрирование]
+      summary: Отозвать сессию пользователя
+      operationId: adminRevokeUserSession
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/UserIdPath'
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '204':
+          description: Сессия пользователя отозвана
+        '401':
+          description: Bearer token отсутствует или невалиден
+        '403':
+          description: Требуется роль ADMIN или SUPER_ADMIN
+        '404':
+          description: Пользователь не найден
+        '429':
+          $ref: '#/components/responses/RateLimitExceeded'
+
+  /api/v1/admin/users/{userId}/roles/admin:
+    put:
+      tags: [Администрирование]
+      summary: Выдать роль ADMIN
+      operationId: adminGrantAdminRole
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/UserIdPath'
+      responses:
+        '204':
+          description: Роль ADMIN выдана
+        '401':
+          description: Bearer token отсутствует или невалиден
+        '403':
+          description: Требуется роль SUPER_ADMIN
+        '404':
+          description: Пользователь не найден
+        '429':
+          $ref: '#/components/responses/RateLimitExceeded'
+    delete:
+      tags: [Администрирование]
+      summary: Отозвать роль ADMIN
+      operationId: adminRevokeAdminRole
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/UserIdPath'
+      responses:
+        '204':
+          description: Роль ADMIN отозвана
+        '401':
+          description: Bearer token отсутствует или невалиден
+        '403':
+          description: Требуется роль SUPER_ADMIN
+        '404':
+          description: Пользователь не найден
+        '429':
+          $ref: '#/components/responses/RateLimitExceeded'
 
 components:
+  responses:
+    RateLimitExceeded:
+      description: Превышен rate limit для текущего scope запроса.
+      headers:
+        Retry-After:
+          description: Рекомендуемая задержка перед повторной попыткой, в секундах.
+          schema:
+            type: integer
+            minimum: 1
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiErrorResponse'
+          example:
+            code: RATE_LIMIT_EXCEEDED
+            message: Too many requests. Please try again later
+    RequestBodyTooLarge:
+      description: Тело login-запроса превышает допустимый размер.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiErrorResponse'
+          example:
+            code: REQUEST_BODY_TOO_LARGE
+            message: Request body is too large
+
   securitySchemes:
     bearerAuth:
       type: http
@@ -382,7 +879,18 @@ components:
       required: false
       schema:
         type: string
-      description: Строка user agent клиента, сохраняемая в метаданных refresh-сессии.
+      description: Строка User-Agent клиента, сохраняемая в метаданных refresh-сессии.
+    OriginHeader:
+      name: Origin
+      in: header
+      required: false
+      schema:
+        type: string
+        format: uri
+      description: |
+        Заголовок управляется браузером. Frontend-код не должен устанавливать его вручную.
+        Если заголовок присутствует, он должен совпадать с одним из `allowedOrigins` найденного auth client.
+        Небраузерные/server-to-server запросы обычно не отправляют этот заголовок.
     XsrfHeader:
       name: X-XSRF-TOKEN
       in: header
@@ -398,8 +906,22 @@ components:
         type: string
         format: uuid
       description: |
-        Настоятельно рекомендуемый idempotency key для refresh.
+        Настоятельно рекомендуемый ключ идемпотентности для refresh-запроса.
         Повторно используйте то же значение только при retry того же логического refresh-запроса.
+    UserIdPath:
+      name: userId
+      in: path
+      required: true
+      schema:
+        type: integer
+        format: int64
+    ClientIdPath:
+      name: clientId
+      in: path
+      required: true
+      schema:
+        type: string
+        maxLength: 128
 
   headers:
     XsrfCookie:
@@ -413,12 +935,12 @@ components:
         type: string
       example: refresh_token=abcdef123456; Path=/api/v1/auth; Max-Age=1209600; Expires=Sat, 25 Apr 2026 15:08:18 GMT; HttpOnly; Secure; SameSite=Lax
     AuthCookies:
-      description: Cookies refresh-сессии, выставляемые при login или registration.
+      description: Cookies refresh-сессии, выставляемые при login, register или refresh.
       schema:
         type: string
       example: refresh_token=abcdef123456; Path=/api/v1/auth; Max-Age=1209600; Expires=Sat, 25 Apr 2026 15:08:18 GMT; HttpOnly; Secure; SameSite=Lax, session_id=1f3a3b1e-2b31-4f78-8f2e-2ff0d4cb3fbc; Path=/api/v1/auth; Max-Age=1209600; Expires=Sat, 25 Apr 2026 15:08:18 GMT; HttpOnly; Secure; SameSite=Lax
     ClearedAuthCookies:
-      description: Auth cookies, очищаемые backend.
+      description: Auth cookies, очищаемые backend-сервисом.
       schema:
         type: string
       example: refresh_token=; Path=/api/v1/auth; Max-Age=0; HttpOnly; Secure; SameSite=Lax, session_id=; Path=/api/v1/auth; Max-Age=0; HttpOnly; Secure; SameSite=Lax
@@ -435,6 +957,9 @@ components:
         password:
           type: string
           minLength: 1
+        clientId:
+          type: string
+          description: Опциональный id auth client. По умолчанию используется `budget-manager-web`.
 
     RegisterRequest:
       type: object
@@ -452,6 +977,9 @@ components:
         email:
           type: string
           maxLength: 128
+        clientId:
+          type: string
+          description: Опциональный id auth client. По умолчанию используется `budget-manager-web`.
 
     TokenResponse:
       type: object
@@ -465,9 +993,11 @@ components:
     SessionResponse:
       type: object
       additionalProperties: false
-      required: [sessionId, userAgent, createdAt, expiresAt]
+      required: [sessionId, clientId, userAgent, createdAt, expiresAt, revoked, status]
       properties:
         sessionId:
+          type: string
+        clientId:
           type: string
         ip:
           type: string
@@ -484,6 +1014,29 @@ components:
         expiresAt:
           type: string
           format: date-time
+        revoked:
+          type: boolean
+        revokedAt:
+          type: string
+          format: date-time
+          nullable: true
+        compromisedAt:
+          type: string
+          format: date-time
+          nullable: true
+        compromisedReason:
+          type: string
+          nullable: true
+        status:
+          $ref: '#/components/schemas/SessionStatus'
+
+    SessionStatus:
+      type: string
+      enum:
+        - ACTIVE
+        - REVOKED
+        - EXPIRED
+        - COMPROMISED
 
     CsrfTokenResponse:
       type: object
@@ -508,22 +1061,243 @@ components:
         path:
           type: string
 
-    MeResponse:
+    ApiErrorResponse:
       type: object
       additionalProperties: false
-      required: [username, uid, roles]
+      required: [code, message]
       properties:
-        username:
+        code:
           type: string
-        uid:
+          enum:
+            - INVALID_REFRESH_TOKEN
+            - REFRESH_TOKEN_EXPIRED
+            - REFRESH_TOKEN_REUSE_DETECTED
+            - INVALID_CREDENTIALS
+            - USERNAME_ALREADY_TAKEN
+            - EMAIL_ALREADY_REGISTERED
+            - REFRESH_TOKEN_ALREADY_PROCESSED
+            - INVALID_CLIENT
+            - USER_NOT_FOUND
+            - AUTH_CLIENT_ALREADY_EXISTS
+            - AUTH_CLIENT_NOT_FOUND
+            - RATE_LIMIT_EXCEEDED
+            - ORIGIN_NOT_ALLOWED
+            - INVALID_AUTH_CLIENT_ORIGIN
+            - REQUEST_BODY_TOO_LARGE
+        message:
+          type: string
+
+    AdminUserResponse:
+      type: object
+      additionalProperties: false
+      required: [id, username, email, roles]
+      properties:
+        id:
           type: integer
           format: int64
+        username:
+          type: string
+        email:
+          type: string
+          format: email
         roles:
           type: array
           items:
             $ref: '#/components/schemas/Role'
 
+    AuditEventResponse:
+      type: object
+      additionalProperties: false
+      required: [id, eventType, occurredAt, details]
+      properties:
+        id:
+          type: string
+          format: uuid
+        eventType:
+          $ref: '#/components/schemas/AuditEventType'
+        occurredAt:
+          type: string
+          format: date-time
+        actorUserId:
+          type: integer
+          format: int64
+        targetUserId:
+          type: integer
+          format: int64
+        username:
+          type: string
+        sessionId:
+          type: string
+        ip:
+          type: string
+        userAgent:
+          type: string
+        details:
+          type: object
+          additionalProperties: true
+
+    AuditEventType:
+      type: string
+      enum:
+        - USER_REGISTERED
+        - USER_LOGGED_IN
+        - USER_LOGIN_FAILED
+        - USER_LOGGED_OUT
+        - USER_LOGGED_OUT_ALL
+        - SESSION_REVOKED
+        - ALL_SESSIONS_REVOKED
+        - REFRESH_TOKEN_ROTATED
+        - REFRESH_TOKEN_REUSE_DETECTED
+        - ADMIN_ROLE_GRANTED
+        - ADMIN_ROLE_REVOKED
+        - SUPER_ADMIN_BOOTSTRAPPED
+        - RATE_LIMIT_EXCEEDED
+        - AUTH_CLIENT_CREATED
+        - AUTH_CLIENT_UPDATED
+        - AUTH_CLIENT_ENABLED
+        - AUTH_CLIENT_DISABLED
+
+    AuthClientCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [clientId, name, accessTokenTtlSeconds, refreshTokenTtlSeconds, tokenAudience, allowedOrigins]
+      properties:
+        clientId:
+          type: string
+          maxLength: 128
+          minLength: 1
+          example: budget-manager-web
+        name:
+          type: string
+          maxLength: 128
+          minLength: 1
+          example: Budget Manager Web
+        enabled:
+          type: boolean
+          default: true
+        accessTokenTtlSeconds:
+          type: integer
+          format: int64
+          minimum: 1
+          maximum: 86400
+          description: TTL access token для конкретного auth client в секундах. Фактический TTL ограничен `APP_SECURITY_ACCESS_TOKEN_TTL`.
+          example: 600
+        refreshTokenTtlSeconds:
+          type: integer
+          format: int64
+          minimum: 1
+          maximum: 7776000
+          example: 1209600
+        tokenAudience:
+          type: string
+          maxLength: 128
+          minLength: 1
+          example: budget-manager
+        allowedOrigins:
+          type: array
+          maxItems: 50
+          description: |
+            Браузерные origins, разрешенные для этого auth client. Списком управляют пользователи с ролью SUPER_ADMIN.
+            Значения используются для CORS preflight и привязки браузерных запросов к найденному auth client.
+            Пример формата origin: `https://app.example.com`; путь указывать не нужно.
+          items:
+            type: string
+            minLength: 1
+            maxLength: 256
+          example:
+            - http://localhost:3000
+            - http://localhost:5173
+
+    AuthClientUpdateRequest:
+      type: object
+      additionalProperties: false
+      required: [name, accessTokenTtlSeconds, refreshTokenTtlSeconds, tokenAudience, allowedOrigins]
+      properties:
+        name:
+          type: string
+          maxLength: 128
+          minLength: 1
+          example: Budget Manager Web
+        accessTokenTtlSeconds:
+          type: integer
+          format: int64
+          minimum: 1
+          maximum: 86400
+          description: TTL access token для конкретного auth client в секундах. Фактический TTL ограничен `APP_SECURITY_ACCESS_TOKEN_TTL`.
+          example: 600
+        refreshTokenTtlSeconds:
+          type: integer
+          format: int64
+          minimum: 1
+          maximum: 7776000
+          example: 1209600
+        tokenAudience:
+          type: string
+          maxLength: 128
+          minLength: 1
+          example: budget-manager
+        allowedOrigins:
+          type: array
+          maxItems: 50
+          description: |
+            Полный список браузерных origins, разрешенных для этого auth client.
+            Значения используются для CORS preflight и привязки браузерных запросов к найденному auth client.
+            Пример формата origin: `https://app.example.com`; путь указывать не нужно.
+          items:
+            type: string
+            minLength: 1
+            maxLength: 256
+          example:
+            - http://localhost:3000
+            - http://localhost:5173
+
+    AuthClientResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - clientId
+        - name
+        - enabled
+        - accessTokenTtlSeconds
+        - refreshTokenTtlSeconds
+        - tokenAudience
+        - allowedOrigins
+        - createdAt
+        - updatedAt
+      properties:
+        id:
+          type: integer
+          format: int64
+        clientId:
+          type: string
+        name:
+          type: string
+        enabled:
+          type: boolean
+        accessTokenTtlSeconds:
+          type: integer
+          format: int64
+        refreshTokenTtlSeconds:
+          type: integer
+          format: int64
+        tokenAudience:
+          type: string
+        allowedOrigins:
+          type: array
+          description: Браузерные origins, разрешенные для CORS и привязки client-origin.
+          items:
+            type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
     Role:
       type: string
       enum:
         - USER
+        - ADMIN
+        - SUPER_ADMIN
