@@ -1,12 +1,17 @@
 spring:
   application:
-    name: Budget_manager
+    name: auth-service
 
   config:
     import: optional:file:.env[.properties]
 
   profiles:
     default: dev
+
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/authdb}
+    username: ${DB_USERNAME:bm}
+    password: ${DB_PASSWORD:bm}
 
   jpa:
     hibernate:
@@ -18,19 +23,88 @@ spring:
 
   kafka:
     bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      timeout: ${REDIS_TIMEOUT:2s}
+      repositories:
+        enabled: false
 
 server:
   port: ${SERVER_PORT:8080}
 
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: never
+  health:
+    redis:
+      enabled: ${APP_RATE_LIMIT_REDIS_HEALTH_ENABLED:false}
+    livenessstate:
+      enabled: true
+    readinessstate:
+      enabled: true
+
 app:
+  auth-clients:
+    default-client-id: ${APP_AUTH_CLIENTS_DEFAULT_CLIENT_ID:budget-manager-web}
+
+  events:
+    kafka:
+      enabled: ${APP_EVENTS_KAFKA_ENABLED:false}
+      topic: ${APP_EVENTS_KAFKA_TOPIC:auth.events}
+      batch-size: ${APP_EVENTS_KAFKA_BATCH_SIZE:50}
+      publisher-fixed-delay-ms: ${APP_EVENTS_KAFKA_PUBLISHER_FIXED_DELAY_MS:5000}
+      retry-delay-ms: ${APP_EVENTS_KAFKA_RETRY_DELAY_MS:30000}
+      max-attempts: ${APP_EVENTS_KAFKA_MAX_ATTEMPTS:10}
+
+  rate-limit:
+    backend: ${APP_RATE_LIMIT_BACKEND:in-memory}
+    redis-key-prefix: ${APP_RATE_LIMIT_REDIS_KEY_PREFIX:auth-service:rate-limit}
+    trusted-proxies: ${APP_RATE_LIMIT_TRUSTED_PROXIES:}
+    login:
+      capacity: ${APP_RATE_LIMIT_LOGIN_CAPACITY:5}
+      refill-period: ${APP_RATE_LIMIT_LOGIN_REFILL_PERIOD:PT10M}
+    register:
+      capacity: ${APP_RATE_LIMIT_REGISTER_CAPACITY:10}
+      refill-period: ${APP_RATE_LIMIT_REGISTER_REFILL_PERIOD:PT10M}
+    refresh:
+      capacity: ${APP_RATE_LIMIT_REFRESH_CAPACITY:30}
+      refill-period: ${APP_RATE_LIMIT_REFRESH_REFILL_PERIOD:PT1M}
+    admin:
+      capacity: ${APP_RATE_LIMIT_ADMIN_CAPACITY:60}
+      refill-period: ${APP_RATE_LIMIT_ADMIN_REFILL_PERIOD:PT1M}
+
+  bootstrap:
+    super-admin:
+      enabled: ${APP_BOOTSTRAP_SUPERADMIN_ENABLED:false}
+      require-empty-user-store: ${APP_BOOTSTRAP_SUPERADMIN_REQUIRE_EMPTY_USER_STORE:true}
+      username: ${APP_BOOTSTRAP_SUPERADMIN_USERNAME:}
+      email: ${APP_BOOTSTRAP_SUPERADMIN_EMAIL:}
+      password: ${APP_BOOTSTRAP_SUPERADMIN_PASSWORD:}
+
   security:
     access-token:
-      issuer: ${APP_SECURITY_ACCESS_TOKEN_ISSUER:budget-manager}
+      issuer: ${APP_SECURITY_ACCESS_TOKEN_ISSUER:auth-service}
       ttl: ${APP_SECURITY_ACCESS_TOKEN_TTL:PT10M}
       validation-mode: ${APP_SECURITY_ACCESS_TOKEN_VALIDATION_MODE:stateful}
 
     jwt:
-      secret: ${APP_SECURITY_JWT_SECRET}
+      private-key: ${APP_SECURITY_JWT_PRIVATE_KEY}
+      public-key: ${APP_SECURITY_JWT_PUBLIC_KEY}
+      key-id: ${APP_SECURITY_JWT_KEY_ID:auth-service-key-1}
 
     cookies:
       secure: ${APP_SECURITY_COOKIES_SECURE:true}
@@ -40,6 +114,7 @@ app:
       revoke-detect: ${APP_SECURITY_REFRESH_REVOKE_DETECT:true}
       ttl: ${APP_SECURITY_REFRESH_TTL:P14D}
       reuse-grace: ${APP_SECURITY_REFRESH_REUSE_GRACE:PT3S}
+      replay-secret: ${APP_SECURITY_REFRESH_REPLAY_SECRET}
       client-binding:
         require-session-id: ${APP_SECURITY_REFRESH_REQUIRE_SESSION_ID:true}
         bind-to-user-agent: ${APP_SECURITY_REFRESH_BIND_TO_USER_AGENT:true}

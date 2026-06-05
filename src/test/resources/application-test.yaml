@@ -1,9 +1,4 @@
 spring:
-  datasource:
-    url: jdbc:postgresql://localhost:5433/bmdb
-    username: bm
-    password: bm
-
   docker:
     compose:
       enabled: false
@@ -11,7 +6,7 @@ spring:
 app:
   security:
     access-token:
-      issuer: budget-manager-test
+      issuer: auth-service-test
       ttl: PT10M
       validation-mode: stateful
 
