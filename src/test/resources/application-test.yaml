@@ -1,0 +1,29 @@
+spring:
+  docker:
+    compose:
+      enabled: false
+
+app:
+  security:
+    access-token:
+      issuer: auth-service-test
+      ttl: PT10M
+      validation-mode: stateful
+
+    cookies:
+      secure: false
+      same-site: "Lax"
+
+    refresh:
+      revoke-detect: true
+      ttl: P14D
+      reuse-grace: PT3S
+      client-binding:
+        require-session-id: true
+        bind-to-user-agent: true
+        bind-to-ip: false
+
+      cleanup:
+        enabled: false
+        retention: P7D
+        cron: "0 0 4 * * *"

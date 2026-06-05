@@ -1,0 +1,1 @@
+ALTER TABLE refresh_tokens RENAME COLUMN device_id TO session_id;

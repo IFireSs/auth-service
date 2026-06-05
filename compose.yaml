@@ -1,14 +1,51 @@
 services:
-  postgres:
+  auth-service:
+    build: .
+    container_name: auth-service
+    env_file:
+      - .env
+    environment:
+      DB_URL: jdbc:postgresql://auth-postgres:5432/authdb
+      DB_USERNAME: bm
+      DB_PASSWORD: bm
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      APP_EVENTS_KAFKA_ENABLED: "true"
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      APP_RATE_LIMIT_BACKEND: "redis"
+      APP_RATE_LIMIT_REDIS_HEALTH_ENABLED: "true"
+      SERVER_PORT: 8080
+    ports:
+      - "8080:8080"
+    depends_on:
+      auth-postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_started
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/actuator/health/readiness || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 30s
+
+  auth-postgres:
     image: 'postgres:16'
     environment:
-      - 'POSTGRES_DB=bmdb'
+      - 'POSTGRES_DB=authdb'
       - 'POSTGRES_PASSWORD=bm'
       - 'POSTGRES_USER=bm'
     ports:
-      - "5433:5432"
+      - "5432:5432"
     volumes:
-      - /mnt/c/Users/Pavel/dev/Buget_manager/pg-init:/docker-entrypoint-initdb.d:ro
+      - ./pg-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bm -d authdb"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
   kafka:
     image: apache/kafka:3.7.0
@@ -39,3 +76,14 @@ services:
     environment:
       KAFKA_CLUSTERS_0_NAME: local
       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+
+  redis:
+    image: redis:7.4-alpine
+    container_name: auth-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
