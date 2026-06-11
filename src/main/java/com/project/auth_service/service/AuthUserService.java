@@ -16,6 +16,8 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
 import java.util.Optional;
+import java.time.Instant;
+import java.util.UUID;
 
 @Service
 @RequiredArgsConstructor
@@ -29,7 +31,7 @@ public class AuthUserService {
                 .map(this::toAuthUser);
     }
 
-    public Optional<AuthUser> findById(Long userId) {
+    public Optional<AuthUser> findById(UUID userId) {
         return userRepository.findById(userId)
                 .map(this::toAuthUser);
     }
@@ -53,6 +55,7 @@ public class AuthUserService {
                     .username(username)
                     .email(email)
                     .passwordHash(passwordHash)
+                    .createdAt(Instant.now())
                     .build());
 
             roles.stream()

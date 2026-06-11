@@ -3,9 +3,7 @@ package com.project.auth_service.rate_limit;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.project.auth_service.api.dto.ApiErrorResponse;
-import com.project.auth_service.enums.AuditEventType;
 import com.project.auth_service.exceptions.RequestBodyTooLargeException;
-import com.project.auth_service.service.AuditEventService;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -23,7 +21,6 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.Locale;
-import java.util.Map;
 
 @Component
 @Order(Ordered.HIGHEST_PRECEDENCE)
@@ -34,7 +31,7 @@ public class RateLimitFilter extends OncePerRequestFilter {
 
     private final RateLimitService rateLimitService;
     private final ClientIpResolver clientIpResolver;
-    private final AuditEventService auditEventService;
+    private final RateLimitRejectionReporter rejectionReporter;
     private final ObjectMapper objectMapper;
 
     @Override
@@ -75,7 +72,7 @@ public class RateLimitFilter extends OncePerRequestFilter {
             return;
         }
 
-        recordRateLimitExceeded(result.rejectedScope(), request);
+        rejectionReporter.report(result.rejectedScope(), target.key(), request);
         writeRateLimitResponse(response, result.retryAfter());
     }
 
@@ -85,7 +82,7 @@ public class RateLimitFilter extends OncePerRequestFilter {
         String ip = clientIpResolver.resolve(request);
 
         if (HttpMethod.POST.matches(method) && "/api/v1/auth/login".equals(path)) {
-            return new RateLimitTarget(RateLimitService.Scope.LOGIN_USERNAME_IP, ip);
+            return new RateLimitTarget(RateLimitService.Scope.LOGIN_ACCOUNT_IP, ip);
         }
         if (HttpMethod.POST.matches(method) && "/api/v1/auth/register".equals(path)) {
             return new RateLimitTarget(RateLimitService.Scope.REGISTER, ip);
@@ -118,20 +115,6 @@ public class RateLimitFilter extends OncePerRequestFilter {
 
     private String normalizeUsername(String username) {
         return username.trim().toLowerCase(Locale.ROOT);
-    }
-
-    private void recordRateLimitExceeded(RateLimitService.Scope scope, HttpServletRequest request) {
-        try {
-            auditEventService.record(AuditEventType.RATE_LIMIT_EXCEEDED, AuditEventService.AuditEventCommand.builder()
-                    .ip(clientIpResolver.resolve(request))
-                    .userAgent(request.getHeader(HttpHeaders.USER_AGENT))
-                    .details(Map.of(
-                            "scope", scope.name(),
-                            "path", request.getRequestURI()
-                    ))
-                    .build());
-        } catch (Exception ignored) {
-        }
     }
 
     private void writeRateLimitResponse(HttpServletResponse response, Duration retryAfter) throws IOException {

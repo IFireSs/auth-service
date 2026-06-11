@@ -13,11 +13,12 @@ import org.springframework.stereotype.Repository;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
+import java.util.UUID;
 
 @Repository
 public interface RefreshTokenRepository extends JpaRepository<RefreshToken, Long>, JpaSpecificationExecutor<RefreshToken> {
     boolean existsByUserIdAndClientIdAndSessionIdAndRevokedFalseAndExpiresAtAfter(
-            Long userId,
+            UUID userId,
             String clientId,
             String sessionId,
             Instant now
@@ -31,7 +32,7 @@ public interface RefreshTokenRepository extends JpaRepository<RefreshToken, Long
         where t.userId = :userId
         and t.revoked = false
         """)
-    int revokeAllActiveByUserId(@Param("userId") Long userId,
+    int revokeAllActiveByUserId(@Param("userId") UUID userId,
                                 @Param("now") Instant now);
 
     @Modifying(flushAutomatically = true, clearAutomatically = true)
@@ -43,7 +44,7 @@ public interface RefreshTokenRepository extends JpaRepository<RefreshToken, Long
         and t.sessionId = :sessionId
         and t.revoked = false
         """)
-    int revokeAllActiveByUserIdAndSessionId(@Param("userId") Long userId,
+    int revokeAllActiveByUserIdAndSessionId(@Param("userId") UUID userId,
                                             @Param("sessionId") String sessionId,
                                             @Param("now") Instant now);
 
@@ -51,7 +52,18 @@ public interface RefreshTokenRepository extends JpaRepository<RefreshToken, Long
     @Query("select t from RefreshToken t where t.tokenHash = :hash")
     Optional<RefreshToken> findByTokenHashForUpdate(@Param("hash") String hash);
 
-    List<RefreshToken> findAllByUserIdAndRevokedFalse(Long userId);
+    List<RefreshToken> findAllByUserIdAndRevokedFalse(UUID userId);
+
+    @Modifying(flushAutomatically = true, clearAutomatically = true)
+    @Query("""
+        update RefreshToken t
+           set t.rotationAttemptId = null,
+               t.rotationResultTokenCipher = null,
+               t.rotationResultExpiresAt = null
+         where t.rotationResultExpiresAt is not null
+           and t.rotationResultExpiresAt < :now
+    """)
+    int clearExpiredRotationReplayPayloads(@Param("now") Instant now);
 
     @Modifying(flushAutomatically = true, clearAutomatically = true)
     @Query("delete from RefreshToken t where t.expiresAt < :cutoff")
@@ -63,11 +75,11 @@ public interface RefreshTokenRepository extends JpaRepository<RefreshToken, Long
 
     @Modifying(flushAutomatically = true, clearAutomatically = true)
     @Query("delete from RefreshToken t where t.userId = :userId")
-    int deleteAllByUserId(@Param("userId") Long userId);
+    int deleteAllByUserId(@Param("userId") UUID userId);
 
     @Modifying(flushAutomatically = true, clearAutomatically = true)
     @Query("delete from RefreshToken t where t.userId = :userId and t.sessionId = :sessionId")
-    int deleteAllByUserIdAndSessionId(@Param("userId") Long userId, @Param("sessionId") String sessionId);
+    int deleteAllByUserIdAndSessionId(@Param("userId") UUID userId, @Param("sessionId") String sessionId);
 
     @Modifying(flushAutomatically = true, clearAutomatically = true)
     @Query("""
@@ -78,7 +90,7 @@ public interface RefreshTokenRepository extends JpaRepository<RefreshToken, Long
            and t.sessionId = :sessionId
            and t.compromisedAt is null
     """)
-    int markSessionCompromisedOnce(@Param("userId") Long userId,
+    int markSessionCompromisedOnce(@Param("userId") UUID userId,
                                    @Param("sessionId") String sessionId,
                                    @Param("now") Instant now,
                                    @Param("reason") String reason);
@@ -91,7 +103,7 @@ public interface RefreshTokenRepository extends JpaRepository<RefreshToken, Long
          where t.userId = :userId
            and t.compromisedAt is null
     """)
-    int markAllSessionsCompromisedOnce(@Param("userId") Long userId,
+    int markAllSessionsCompromisedOnce(@Param("userId") UUID userId,
                                    @Param("now") Instant now,
                                    @Param("reason") String reason);
 }

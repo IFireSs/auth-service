@@ -33,7 +33,7 @@ tags:
   - name: Аутентификация
     description: Аутентификация, refresh, logout и управление сессиями
   - name: Администрирование
-    description: Управление пользователями, ролями и сессиями
+    description: Управление пользователями, ролями, блокировками и сессиями
 
 paths:
   /.well-known/jwks.json:
@@ -105,16 +105,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/TokenResponse'
         '400':
-          description: Неизвестный или отключенный auth client
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ApiErrorResponse'
-        '401':
-          description: Ошибка auth-уровня, возвращаемая backend
-          headers:
-            Set-Cookie:
-              $ref: '#/components/headers/ClearedAuthCookies'
+          description: Ошибка валидации запроса либо неизвестный/отключенный auth client
           content:
             application/json:
               schema:
@@ -129,9 +120,6 @@ paths:
                   - $ref: '#/components/schemas/ApiErrorResponse'
         '409':
           description: Username или email уже существуют
-          headers:
-            Set-Cookie:
-              $ref: '#/components/headers/ClearedAuthCookies'
           content:
             application/json:
               schema:
@@ -171,22 +159,19 @@ paths:
               schema:
                 $ref: '#/components/schemas/TokenResponse'
         '400':
-          description: Неизвестный или отключенный auth client
+          description: Ошибка валидации запроса либо неизвестный/отключенный auth client
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApiErrorResponse'
         '401':
           description: Неверные учетные данные
-          headers:
-            Set-Cookie:
-              $ref: '#/components/headers/ClearedAuthCookies'
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApiErrorResponse'
         '403':
-          description: CSRF-токен отсутствует/невалиден или Origin запроса не разрешен для запрошенного auth client.
+          description: Пользователь заблокирован, CSRF-токен отсутствует/невалиден или Origin запроса не разрешен для запрошенного auth client.
           content:
             application/json:
               schema:
@@ -235,6 +220,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/TokenResponse'
+        '400':
+          description: Auth client refresh-сессии отключен или больше недоступен
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiErrorResponse'
         '401':
           description: Невалидный refresh token, истекший token, обнаружен reuse refresh token или отсутствует refresh cookie
           headers:
@@ -245,7 +236,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApiErrorResponse'
         '403':
-          description: CSRF-токен отсутствует/невалиден или Origin запроса не разрешен для auth client refresh-сессии.
+          description: Пользователь заблокирован, CSRF-токен отсутствует/невалиден или Origin запроса не разрешен для auth client refresh-сессии.
+          headers:
+            Set-Cookie:
+              $ref: '#/components/headers/ClearedAuthCookies'
           content:
             application/json:
               schema:
@@ -332,13 +326,14 @@ paths:
   /api/v1/auth/sessions:
     get:
       tags: [Аутентификация]
-      summary: Получить список активных refresh-сессий
+      summary: Получить список неотозванных refresh-сессий
+      description: Истекшие, но еще не очищенные сессии могут присутствовать со статусом `EXPIRED`.
       operationId: listSessions
       security:
         - bearerAuth: []
       responses:
         '200':
-          description: Активные сессии возвращены
+          description: Неотозванные сессии возвращены
           content:
             application/json:
               schema:
@@ -431,20 +426,20 @@ paths:
           required: false
           description: Ищет события, где пользователь является actor или target.
           schema:
-            type: integer
-            format: int64
+            type: string
+            format: uuid
         - name: actorUserId
           in: query
           required: false
           schema:
-            type: integer
-            format: int64
+            type: string
+            format: uuid
         - name: targetUserId
           in: query
           required: false
           schema:
-            type: integer
-            format: int64
+            type: string
+            format: uuid
         - name: username
           in: query
           required: false
@@ -799,6 +794,86 @@ paths:
         '429':
           $ref: '#/components/responses/RateLimitExceeded'
 
+  /api/v1/admin/users/{userId}/ban:
+    put:
+      tags: [Администрирование]
+      summary: Заблокировать пользователя
+      description: |
+        Создает активный бан и отзывает все сессии пользователя.
+        `expiresAt = null` означает постоянный бан.
+        ADMIN может блокировать только обычных пользователей.
+        SUPER_ADMIN может блокировать привилегированных пользователей, кроме себя и защищенного bootstrap.
+      operationId: adminBanUser
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/UserIdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserBanRequest'
+      responses:
+        '200':
+          description: Пользователь заблокирован
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminUserResponse'
+        '400':
+          description: Некорректная причина или срок бана
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiErrorResponse'
+        '401':
+          description: Bearer token отсутствует или невалиден
+        '403':
+          description: Недостаточно прав, self-ban или пользователь защищен от бана
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiErrorResponse'
+        '404':
+          description: Пользователь не найден
+        '409':
+          description: Пользователь уже имеет активный бан
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiErrorResponse'
+        '429':
+          $ref: '#/components/responses/RateLimitExceeded'
+    delete:
+      tags: [Администрирование]
+      summary: Снять активный бан пользователя
+      description: Повторный вызов для пользователя без активного бана является успешным.
+      operationId: adminUnbanUser
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/UserIdPath'
+      responses:
+        '200':
+          description: Активный бан снят или отсутствовал
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminUserResponse'
+        '401':
+          description: Bearer token отсутствует или невалиден
+        '403':
+          description: Недостаточно прав или попытка управлять собственным баном
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiErrorResponse'
+        '404':
+          description: Пользователь не найден
+        '429':
+          $ref: '#/components/responses/RateLimitExceeded'
+
   /api/v1/admin/users/{userId}/roles/admin:
     put:
       tags: [Администрирование]
@@ -913,8 +988,8 @@ components:
       in: path
       required: true
       schema:
-        type: integer
-        format: int64
+        type: string
+        format: uuid
     ClientIdPath:
       name: clientId
       in: path
@@ -1084,26 +1159,77 @@ components:
             - ORIGIN_NOT_ALLOWED
             - INVALID_AUTH_CLIENT_ORIGIN
             - REQUEST_BODY_TOO_LARGE
+            - USER_BANNED
+            - INVALID_USER_BAN
+            - USER_BAN_FORBIDDEN
+            - USER_ALREADY_BANNED
         message:
           type: string
 
     AdminUserResponse:
       type: object
       additionalProperties: false
-      required: [id, username, email, roles]
+      required: [id, username, email, createdAt, banProtected, activeBan, roles]
       properties:
         id:
-          type: integer
-          format: int64
+          type: string
+          format: uuid
         username:
           type: string
         email:
           type: string
           format: email
+        createdAt:
+          type: string
+          format: date-time
+        banProtected:
+          type: boolean
+        activeBan:
+          oneOf:
+            - $ref: '#/components/schemas/UserBanResponse'
+            - type: 'null'
         roles:
           type: array
           items:
             $ref: '#/components/schemas/Role'
+
+    UserBanRequest:
+      type: object
+      additionalProperties: false
+      required: [reason]
+      properties:
+        expiresAt:
+          description: Будущий момент окончания временного бана. Отсутствие/null означает постоянный бан.
+          oneOf:
+            - type: string
+              format: date-time
+            - type: 'null'
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 500
+
+    UserBanResponse:
+      type: object
+      additionalProperties: false
+      required: [id, createdAt, expiresAt, reason, createdBy]
+      properties:
+        id:
+          type: string
+          format: uuid
+        createdAt:
+          type: string
+          format: date-time
+        expiresAt:
+          oneOf:
+            - type: string
+              format: date-time
+            - type: 'null'
+        reason:
+          type: string
+        createdBy:
+          type: string
+          format: uuid
 
     AuditEventResponse:
       type: object
@@ -1119,11 +1245,11 @@ components:
           type: string
           format: date-time
         actorUserId:
-          type: integer
-          format: int64
+          type: string
+          format: uuid
         targetUserId:
-          type: integer
-          format: int64
+          type: string
+          format: uuid
         username:
           type: string
         sessionId:
@@ -1150,6 +1276,8 @@ components:
         - REFRESH_TOKEN_REUSE_DETECTED
         - ADMIN_ROLE_GRANTED
         - ADMIN_ROLE_REVOKED
+        - USER_BANNED
+        - USER_UNBANNED
         - SUPER_ADMIN_BOOTSTRAPPED
         - RATE_LIMIT_EXCEEDED
         - AUTH_CLIENT_CREATED

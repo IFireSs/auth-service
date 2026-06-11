@@ -6,6 +6,7 @@ import com.project.auth_service.entity.RefreshToken;
 import com.project.auth_service.enums.AuditEventType;
 import com.project.auth_service.exceptions.BadCredentialsException;
 import com.project.auth_service.exceptions.RefreshTokenReuseDetectedException;
+import com.project.auth_service.exceptions.UserBannedException;
 import com.project.auth_service.service.dto.AuthUser;
 import lombok.Builder;
 import lombok.RequiredArgsConstructor;
@@ -19,6 +20,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 
 @Service
 @RequiredArgsConstructor
@@ -32,6 +34,7 @@ public class AuthService {
     private final AuditEventService auditEventService;
     private final AuthClientService authClientService;
     private final SessionResponseMapper sessionResponseMapper;
+    private final UserBanService userBanService;
 
     public record AuthResult(String accessToken, String rawRefreshToken, String sessionId) {
         @Override public String toString() {
@@ -77,7 +80,7 @@ public class AuthService {
         String passwordHash = passwordEncoder.encode(command.password());
         AuthUser authUser = authUserService.registerLocalUser(command.username(), command.email(), passwordHash);
 
-        Long userId = authUser.id();
+        UUID userId = authUser.id();
         String accessToken = accessTokenService.issueAccessToken(userId, authUser.username(), authUser.roles(), command.sessionId(), client);
         String rawRefreshToken = refreshTokenService.createSession(userId, command.sessionId(), command.ip(), command.userAgent(), client);
         auditEventService.record(AuditEventType.USER_REGISTERED, AuditEventService.AuditEventCommand.builder()
@@ -110,7 +113,18 @@ public class AuthService {
         }
 
         AuthUser authUser = authUserService.findByUsername(command.username()).orElseThrow(BadCredentialsException::new);
-        Long userId = authUser.id();
+        if (userBanService.isBanned(authUser.id())) {
+            auditEventService.recordImmediately(AuditEventType.USER_LOGIN_FAILED, AuditEventService.AuditEventCommand.builder()
+                    .actorUserId(authUser.id())
+                    .targetUserId(authUser.id())
+                    .username(authUser.username())
+                    .ip(command.ip())
+                    .userAgent(command.userAgent())
+                    .details(Map.of("reason", "USER_BANNED", "clientId", client.getClientId()))
+                    .build());
+            throw new UserBannedException();
+        }
+        UUID userId = authUser.id();
         String accessToken = accessTokenService.issueAccessToken(userId, authUser.username(), authUser.roles(), command.sessionId(), client);
         String rawRefreshToken = refreshTokenService.createSession(userId, command.sessionId(), command.ip(), command.userAgent(), client);
         auditEventService.record(AuditEventType.USER_LOGGED_IN, AuditEventService.AuditEventCommand.builder()
@@ -136,7 +150,7 @@ public class AuthService {
                 command.refreshAttemptId()
         );
 
-        Long userId = rotateResult.userId();
+        UUID userId = rotateResult.userId();
         AuthClient client = authClientService.resolveActiveClient(rotateResult.clientId());
         AuthUser authUser = authUserService.findById(userId).orElseThrow(BadCredentialsException::new);
         String accessToken = accessTokenService.issueAccessToken(userId, authUser.username(), authUser.roles(), rotateResult.sessionId(), client);
@@ -177,7 +191,7 @@ public class AuthService {
     }
 
     @Transactional
-    public void logoutAll(Long userId){
+    public void logoutAll(UUID userId){
         refreshTokenService.revokeAllByUserId(userId, Instant.now());
         auditEventService.record(AuditEventType.USER_LOGGED_OUT_ALL, AuditEventService.AuditEventCommand.builder()
                 .actorUserId(userId)
@@ -186,7 +200,7 @@ public class AuthService {
     }
 
     @Transactional
-    public void logoutSession(Long userId, String sessionId){
+    public void logoutSession(UUID userId, String sessionId){
         refreshTokenService.revokeAllActiveByUserIdAndSessionId(userId, sessionId, Instant.now());
         auditEventService.record(AuditEventType.SESSION_REVOKED, AuditEventService.AuditEventCommand.builder()
                 .actorUserId(userId)
@@ -196,7 +210,7 @@ public class AuthService {
     }
 
     @Transactional(readOnly = true)
-    public List<SessionResponse> sessions(Long userId){
+    public List<SessionResponse> sessions(UUID userId){
         List<RefreshToken> allByUserIdAndRevokedFalse = refreshTokenService.findAllByUserIdAndRevokedFalse(userId);
         Instant now = Instant.now();
         return allByUserIdAndRevokedFalse.stream()
@@ -204,6 +218,6 @@ public class AuthService {
                 .toList();
     }
 
-    public record JwtSession(Long userId, String sessionId) {
+    public record JwtSession(UUID userId, String sessionId) {
     }
 }

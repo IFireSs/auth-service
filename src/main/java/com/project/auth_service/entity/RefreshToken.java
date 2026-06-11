@@ -13,6 +13,7 @@ import lombok.NoArgsConstructor;
 import lombok.Setter;
 
 import java.time.Instant;
+import java.util.UUID;
 
 @Entity
 @Table(name = "refresh_tokens")
@@ -28,7 +29,7 @@ public class RefreshToken {
     private Long id;
 
     @Column(name = "user_id", nullable = false)
-    private Long userId;
+    private UUID userId;
 
     @Column(name = "token_hash", nullable = false)
     private String tokenHash;

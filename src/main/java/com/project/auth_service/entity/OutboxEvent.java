@@ -59,22 +59,46 @@ public class OutboxEvent {
     @Column(name = "last_error")
     private String lastError;
 
-    public void markProcessing(Instant nextAttemptAt) {
+    @Column(name = "claim_id")
+    private UUID claimId;
+
+    @Column(name = "lease_until")
+    private Instant leaseUntil;
+
+    @Column(name = "last_attempt_at")
+    private Instant lastAttemptAt;
+
+    public void markProcessing(UUID claimId, Instant leaseUntil, Instant attemptedAt) {
         this.status = OutboxEventStatus.PROCESSING;
-        this.nextAttemptAt = nextAttemptAt;
+        this.attempts++;
+        this.claimId = claimId;
+        this.leaseUntil = leaseUntil;
+        this.lastAttemptAt = attemptedAt;
     }
 
     public void markPublished(Instant publishedAt) {
         this.status = OutboxEventStatus.PUBLISHED;
         this.publishedAt = publishedAt;
         this.lastError = null;
+        clearClaim();
     }
 
-    public void markFailed(String error, Instant nextAttemptAt) {
-        this.status = OutboxEventStatus.FAILED;
-        this.attempts++;
+    public void markFailed(String error, Instant nextAttemptAt, int maxAttempts) {
+        this.status = attempts >= maxAttempts ? OutboxEventStatus.DEAD : OutboxEventStatus.FAILED;
         this.nextAttemptAt = nextAttemptAt;
         this.lastError = truncate(error);
+        clearClaim();
+    }
+
+    public boolean isProcessingClaim(UUID expectedClaimId) {
+        return status == OutboxEventStatus.PROCESSING
+                && claimId != null
+                && claimId.equals(expectedClaimId);
+    }
+
+    private void clearClaim() {
+        this.claimId = null;
+        this.leaseUntil = null;
     }
 
     private String truncate(String value) {

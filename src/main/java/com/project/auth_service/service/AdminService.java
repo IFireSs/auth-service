@@ -3,7 +3,9 @@ package com.project.auth_service.service;
 import com.project.auth_service.api.dto.AdminUserResponse;
 import com.project.auth_service.api.dto.AuditEventResponse;
 import com.project.auth_service.api.dto.SessionResponse;
+import com.project.auth_service.api.dto.UserBanResponse;
 import com.project.auth_service.entity.User;
+import com.project.auth_service.entity.UserBan;
 import com.project.auth_service.entity.UserRoleEntity;
 import com.project.auth_service.entity.UserRoleId;
 import com.project.auth_service.enums.AuditEventType;
@@ -24,8 +26,10 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.stream.Collectors;
 
 @Service
@@ -37,9 +41,10 @@ public class AdminService {
     private final RefreshTokenService refreshTokenService;
     private final AuditEventService auditEventService;
     private final SessionResponseMapper sessionResponseMapper;
+    private final UserBanService userBanService;
 
     public List<AdminUserResponse> listUsers(UserFilter filter, int limit, int offset) {
-        Sort sort = Sort.by("id").ascending();
+        Sort sort = Sort.by("createdAt").ascending().and(Sort.by("id").ascending());
 
         List<User> users = userRepository.findAll(
                         userSpecification(filter),
@@ -48,17 +53,22 @@ public class AdminService {
                 .stream()
                 .toList();
 
-        Map<Long, List<Role>> rolesByUserId = rolesByUserId(users);
+        Map<UUID, List<Role>> rolesByUserId = rolesByUserId(users);
+        Map<UUID, UserBan> bansByUserId = userBanService.findActiveBans(users.stream().map(User::getId).toList());
         return users.stream()
-                .map(user -> toAdminUserResponse(user, rolesByUserId.getOrDefault(user.getId(), List.of())))
+                .map(user -> toAdminUserResponse(
+                        user,
+                        rolesByUserId.getOrDefault(user.getId(), List.of()),
+                        bansByUserId.get(user.getId())
+                ))
                 .toList();
     }
 
-    public AdminUserResponse getUser(Long userId) {
+    public AdminUserResponse getUser(UUID userId) {
         return toAdminUserResponse(findUser(userId));
     }
 
-    public List<SessionResponse> listUserSessions(Long userId, SessionFilter filter, int limit, int offset) {
+    public List<SessionResponse> listUserSessions(UUID userId, SessionFilter filter, int limit, int offset) {
         ensureUserExists(userId);
         Instant now = Instant.now();
         return refreshTokenService.findAllByUserId(userId, filter, limit, offset).stream()
@@ -71,7 +81,7 @@ public class AdminService {
     }
 
     @Transactional
-    public void logoutUserEverywhere(Long actorUserId, Long userId) {
+    public void logoutUserEverywhere(UUID actorUserId, UUID userId) {
         ensureUserExists(userId);
         refreshTokenService.revokeAllByUserId(userId, Instant.now());
         auditEventService.record(AuditEventType.ALL_SESSIONS_REVOKED, AuditEventService.AuditEventCommand.builder()
@@ -81,7 +91,7 @@ public class AdminService {
     }
 
     @Transactional
-    public void revokeUserSession(Long actorUserId, Long userId, String sessionId) {
+    public void revokeUserSession(UUID actorUserId, UUID userId, String sessionId) {
         ensureUserExists(userId);
         refreshTokenService.revokeAllActiveByUserIdAndSessionId(userId, sessionId, Instant.now());
         auditEventService.record(AuditEventType.SESSION_REVOKED, AuditEventService.AuditEventCommand.builder()
@@ -92,7 +102,31 @@ public class AdminService {
     }
 
     @Transactional
-    public void grantAdmin(Long actorUserId, Long userId) {
+    public AdminUserResponse banUser(UUID actorUserId, UUID userId, Instant expiresAt, String reason) {
+        UserBan ban = userBanService.ban(actorUserId, userId, expiresAt, reason);
+        refreshTokenService.revokeAllByUserIdPreservingState(userId, Instant.now());
+        auditEventService.record(AuditEventType.USER_BANNED, AuditEventService.AuditEventCommand.builder()
+                .actorUserId(actorUserId)
+                .targetUserId(userId)
+                .details(banDetails(ban))
+                .build());
+        return toAdminUserResponse(findUser(userId));
+    }
+
+    @Transactional
+    public AdminUserResponse unbanUser(UUID actorUserId, UUID userId) {
+        userBanService.unban(actorUserId, userId).ifPresent(ban ->
+                auditEventService.record(AuditEventType.USER_UNBANNED, AuditEventService.AuditEventCommand.builder()
+                        .actorUserId(actorUserId)
+                        .targetUserId(userId)
+                        .details(Map.of("banId", ban.getId().toString()))
+                        .build())
+        );
+        return toAdminUserResponse(findUser(userId));
+    }
+
+    @Transactional
+    public void grantAdmin(UUID actorUserId, UUID userId) {
         ensureUserExists(userId);
         userRoleRepository.save(new UserRoleEntity(new UserRoleId(userId, Role.ADMIN)));
         auditEventService.record(AuditEventType.ADMIN_ROLE_GRANTED, AuditEventService.AuditEventCommand.builder()
@@ -103,7 +137,7 @@ public class AdminService {
     }
 
     @Transactional
-    public void revokeAdmin(Long actorUserId, Long userId) {
+    public void revokeAdmin(UUID actorUserId, UUID userId) {
         ensureUserExists(userId);
         Instant now = Instant.now();
         userRoleRepository.deleteById(new UserRoleId(userId, Role.ADMIN));
@@ -119,20 +153,52 @@ public class AdminService {
     }
 
     private AdminUserResponse toAdminUserResponse(User user) {
-        return toAdminUserResponse(user, userRoleRepository.findRolesByUserId(user.getId()));
+        return toAdminUserResponse(
+                user,
+                userRoleRepository.findRolesByUserId(user.getId()),
+                userBanService.findActiveBan(user.getId()).orElse(null)
+        );
     }
 
-    private AdminUserResponse toAdminUserResponse(User user, List<Role> roles) {
+    private AdminUserResponse toAdminUserResponse(User user, List<Role> roles, UserBan activeBan) {
         return new AdminUserResponse(
                 user.getId(),
                 user.getUsername(),
                 user.getEmail(),
+                user.getCreatedAt(),
+                user.isBanProtected(),
+                toUserBanResponse(activeBan),
                 roles
         );
     }
 
-    private Map<Long, List<Role>> rolesByUserId(List<User> users) {
-        List<Long> userIds = users.stream()
+    private UserBanResponse toUserBanResponse(UserBan ban) {
+        if (ban == null) {
+            return null;
+        }
+        return new UserBanResponse(
+                ban.getId(),
+                ban.getCreatedAt(),
+                ban.getExpiresAt(),
+                ban.getReason(),
+                ban.getCreatedBy()
+        );
+    }
+
+    private Map<String, Object> banDetails(UserBan ban) {
+        Map<String, Object> details = new LinkedHashMap<>();
+        details.put("banId", ban.getId().toString());
+        details.put("permanent", ban.getExpiresAt() == null);
+        details.put("reason", ban.getReason());
+        details.put("sessionsRevoked", true);
+        if (ban.getExpiresAt() != null) {
+            details.put("expiresAt", ban.getExpiresAt().toString());
+        }
+        return details;
+    }
+
+    private Map<UUID, List<Role>> rolesByUserId(List<User> users) {
+        List<UUID> userIds = users.stream()
                 .map(User::getId)
                 .toList();
         if (userIds.isEmpty()) {
@@ -163,7 +229,7 @@ public class AdminService {
 
             if (filter.role() != null) {
                 assert query != null;
-                var subquery = query.subquery(Long.class);
+                var subquery = query.subquery(UUID.class);
                 var userRoleRoot = subquery.from(UserRoleEntity.class);
                 subquery.select(userRoleRoot.get("id").get("userId"))
                         .where(
@@ -181,11 +247,11 @@ public class AdminService {
         return value != null && !value.isBlank();
     }
 
-    private User findUser(Long userId) {
+    private User findUser(UUID userId) {
         return userRepository.findById(userId).orElseThrow(UserNotFoundException::new);
     }
 
-    private void ensureUserExists(Long userId) {
+    private void ensureUserExists(UUID userId) {
         if (!userRepository.existsById(userId)) {
             throw new UserNotFoundException();
         }

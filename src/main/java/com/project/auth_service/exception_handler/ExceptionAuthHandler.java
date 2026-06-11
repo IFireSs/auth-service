@@ -6,15 +6,20 @@ import com.project.auth_service.api.dto.ApiErrorResponse;
 import com.project.auth_service.exceptions.AuthClientAlreadyExistsException;
 import com.project.auth_service.exceptions.AuthClientNotFoundException;
 import com.project.auth_service.exceptions.BadCredentialsException;
+import com.project.auth_service.exceptions.BannedUserRefreshException;
 import com.project.auth_service.exceptions.EmailAlreadyExistsException;
 import com.project.auth_service.exceptions.ExpiredRefreshTokenException;
 import com.project.auth_service.exceptions.InvalidAuthClientOriginException;
 import com.project.auth_service.exceptions.InvalidRefreshTokenException;
+import com.project.auth_service.exceptions.InvalidUserBanException;
 import com.project.auth_service.exceptions.InvalidClientException;
 import com.project.auth_service.exceptions.OriginNotAllowedException;
 import com.project.auth_service.exceptions.RefreshTokenAlreadyProcessedException;
 import com.project.auth_service.exceptions.RefreshTokenReuseDetectedException;
 import com.project.auth_service.exceptions.UserNotFoundException;
+import com.project.auth_service.exceptions.UserAlreadyBannedException;
+import com.project.auth_service.exceptions.UserBanForbiddenException;
+import com.project.auth_service.exceptions.UserBannedException;
 import com.project.auth_service.exceptions.UsernameAlreadyExistsException;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpHeaders;
@@ -44,6 +49,29 @@ public class ExceptionAuthHandler {
         return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(error("INVALID_CREDENTIALS", ex));
     }
 
+    @ExceptionHandler(BannedUserRefreshException.class)
+    public ResponseEntity<ApiErrorResponse> handleBannedRefresh(BannedUserRefreshException ex) {
+        return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                .header(HttpHeaders.SET_COOKIE, refreshCookieFactory.clearRefreshCookie().toString())
+                .header(HttpHeaders.SET_COOKIE, sessionIdCookieFactory.clearSessionIdCookie().toString())
+                .body(error("USER_BANNED", ex));
+    }
+
+    @ExceptionHandler(UserBannedException.class)
+    public ResponseEntity<ApiErrorResponse> handleUserBanned(UserBannedException ex) {
+        return ResponseEntity.status(HttpStatus.FORBIDDEN).body(error("USER_BANNED", ex));
+    }
+
+    @ExceptionHandler(InvalidUserBanException.class)
+    public ResponseEntity<ApiErrorResponse> handleInvalidUserBan(InvalidUserBanException ex) {
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(error("INVALID_USER_BAN", ex));
+    }
+
+    @ExceptionHandler(UserBanForbiddenException.class)
+    public ResponseEntity<ApiErrorResponse> handleUserBanForbidden(UserBanForbiddenException ex) {
+        return ResponseEntity.status(HttpStatus.FORBIDDEN).body(error("USER_BAN_FORBIDDEN", ex));
+    }
+
     @ExceptionHandler(InvalidClientException.class)
     public ResponseEntity<ApiErrorResponse> handleInvalidClient(InvalidClientException ex) {
         return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(error("INVALID_CLIENT", ex));
@@ -62,7 +90,8 @@ public class ExceptionAuthHandler {
     @ExceptionHandler({
             UsernameAlreadyExistsException.class,
             EmailAlreadyExistsException.class,
-            AuthClientAlreadyExistsException.class
+            AuthClientAlreadyExistsException.class,
+            UserAlreadyBannedException.class
     })
     public ResponseEntity<ApiErrorResponse> handleRegistrationConflict(RuntimeException ex) {
         return ResponseEntity.status(HttpStatus.CONFLICT).body(error(errorCode(ex), ex));
@@ -97,6 +126,7 @@ public class ExceptionAuthHandler {
             case UserNotFoundException ignored -> "USER_NOT_FOUND";
             case AuthClientAlreadyExistsException ignored -> "AUTH_CLIENT_ALREADY_EXISTS";
             case AuthClientNotFoundException ignored -> "AUTH_CLIENT_NOT_FOUND";
+            case UserAlreadyBannedException ignored -> "USER_ALREADY_BANNED";
             default -> "AUTH_ERROR";
         };
     }

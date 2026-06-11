@@ -1,8 +1,10 @@
 package com.project.auth_service.rate_limit;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.project.auth_service.config.RateLimitAuditProperties;
 import com.project.auth_service.config.RateLimitProperties;
 import com.project.auth_service.service.AuditEventService;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
@@ -11,6 +13,7 @@ import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
 
 import java.time.Duration;
+import java.time.Clock;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -67,7 +70,12 @@ class RateLimitFilterTests {
                                              long refreshCapacity,
                                              long adminCapacity) {
         RateLimitProperties properties = new RateLimitProperties(
-                new RateLimitProperties.Limit(loginCapacity, Duration.ofMinutes(1)),
+                new RateLimitProperties.Login(
+                        new RateLimitProperties.Limit(loginCapacity, Duration.ofMinutes(1)),
+                        new RateLimitProperties.Limit(100, Duration.ofMinutes(1)),
+                        new RateLimitProperties.Limit(100, Duration.ofMinutes(1)),
+                        "test-rate-limit-account-key-secret-0123456789"
+                ),
                 new RateLimitProperties.Limit(registerCapacity, Duration.ofMinutes(1)),
                 new RateLimitProperties.Limit(refreshCapacity, Duration.ofMinutes(1)),
                 new RateLimitProperties.Limit(adminCapacity, Duration.ofMinutes(1)),
@@ -75,11 +83,25 @@ class RateLimitFilterTests {
                 "auth-service:rate-limit",
                 List.of()
         );
+        RateLimitAccountKeyHasher accountKeyHasher = new RateLimitAccountKeyHasher(properties);
         return new RateLimitFilter(
-                new RateLimitService(properties, new InMemoryRateLimitBackend(properties)),
+                new RateLimitService(properties, new InMemoryRateLimitBackend(properties), accountKeyHasher),
                 new ClientIpResolver(properties),
-                mock(AuditEventService.class),
+                rejectionReporter(),
                 new ObjectMapper()
+        );
+    }
+
+    private RateLimitRejectionReporter rejectionReporter() {
+        RateLimitAuditProperties properties = new RateLimitAuditProperties(
+                100,
+                Duration.ofMinutes(1),
+                Duration.ofMinutes(5)
+        );
+        return new RateLimitRejectionReporter(
+                new RateLimitAuditEmissionLimiter(properties, Clock.systemUTC()),
+                mock(AuditEventService.class),
+                new SimpleMeterRegistry()
         );
     }
 

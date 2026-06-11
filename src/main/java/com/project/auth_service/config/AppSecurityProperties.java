@@ -1,6 +1,7 @@
 package com.project.auth_service.config;
 
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Pattern;
@@ -54,12 +55,14 @@ public record AppSecurityProperties(
     public record Cleanup(
             boolean enabled,
             @NotNull Duration retention,
-            @NotBlank String cron
+            @NotBlank String cron,
+            @Min(1000) long replayPayloadCleanupFixedDelayMs
     ) {
     }
 
     public record AccessToken(
             @NotBlank String issuer,
+            @NotBlank String audience,
             @NotNull @DurationMin(seconds = 1) Duration ttl,
             @NotNull ValidationMode validationMode
     ) {

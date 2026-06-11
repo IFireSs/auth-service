@@ -4,9 +4,23 @@ spring:
       enabled: false
 
 app:
+  rate-limit:
+    login:
+      account-key-secret: test-rate-limit-account-key-secret-0123456789
+      ip:
+        capacity: 5
+        refill-period: PT10M
+      account:
+        capacity: 100
+        refill-period: PT15M
+      account-ip:
+        capacity: 5
+        refill-period: PT10M
+
   security:
     access-token:
       issuer: auth-service-test
+      audience: auth-service-api-test
       ttl: PT10M
       validation-mode: stateful
 

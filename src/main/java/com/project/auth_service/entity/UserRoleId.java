@@ -11,6 +11,7 @@ import lombok.NoArgsConstructor;
 import lombok.Setter;
 
 import java.io.Serializable;
+import java.util.UUID;
 
 @Embeddable
 @Getter
@@ -20,7 +21,7 @@ import java.io.Serializable;
 @EqualsAndHashCode
 public class UserRoleId implements Serializable {
 
-    private Long userId;
+    private UUID userId;
 
     @Enumerated(EnumType.STRING)
     private Role role;

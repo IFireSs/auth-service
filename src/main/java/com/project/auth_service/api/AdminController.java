@@ -6,6 +6,7 @@ import com.project.auth_service.api.dto.AuthClientCreateRequest;
 import com.project.auth_service.api.dto.AuthClientResponse;
 import com.project.auth_service.api.dto.AuthClientUpdateRequest;
 import com.project.auth_service.api.dto.SessionResponse;
+import com.project.auth_service.api.dto.UserBanRequest;
 import com.project.auth_service.enums.AuditEventType;
 import com.project.auth_service.enums.Role;
 import com.project.auth_service.enums.SessionStatus;
@@ -33,6 +34,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.UUID;
 
 @RestController
 @RequiredArgsConstructor
@@ -50,12 +52,12 @@ public class AdminController {
     }
 
     @GetMapping("/users/{userId}")
-    public AdminUserResponse getUser(@PathVariable Long userId) {
+    public AdminUserResponse getUser(@PathVariable UUID userId) {
         return adminService.getUser(userId);
     }
 
     @GetMapping("/users/{userId}/sessions")
-    public List<SessionResponse> listUserSessions(@PathVariable Long userId,
+    public List<SessionResponse> listUserSessions(@PathVariable UUID userId,
                                                   @RequestParam(defaultValue = "50") int limit,
                                                   @RequestParam(defaultValue = "0") int offset,
                                                   @RequestParam(required = false) SessionStatus status) {
@@ -66,9 +68,9 @@ public class AdminController {
     public List<AuditEventResponse> listAuditEvents(@RequestParam(defaultValue = "50") int limit,
                                                     @RequestParam(defaultValue = "0") int offset,
                                                     @RequestParam(required = false) AuditEventType eventType,
-                                                    @RequestParam(required = false) Long userId,
-                                                    @RequestParam(required = false) Long actorUserId,
-                                                    @RequestParam(required = false) Long targetUserId,
+                                                    @RequestParam(required = false) UUID userId,
+                                                    @RequestParam(required = false) UUID actorUserId,
+                                                    @RequestParam(required = false) UUID targetUserId,
                                                     @RequestParam(required = false) String username,
                                                     @RequestParam(required = false) String sessionId,
                                                     @RequestParam(required = false) String ip,
@@ -127,29 +129,42 @@ public class AdminController {
 
     @PostMapping("/users/{userId}/logout-all")
     public ResponseEntity<Void> logoutUserEverywhere(@AuthenticationPrincipal Jwt jwt,
-                                                     @PathVariable Long userId) {
+                                                     @PathVariable UUID userId) {
         adminService.logoutUserEverywhere(JwtClaims.userId(jwt), userId);
         return ResponseEntity.noContent().build();
     }
 
     @PostMapping("/users/{userId}/sessions/{sessionId}/revoke")
     public ResponseEntity<Void> revokeUserSession(@AuthenticationPrincipal Jwt jwt,
-                                                  @PathVariable Long userId,
+                                                  @PathVariable UUID userId,
                                                   @PathVariable String sessionId) {
         adminService.revokeUserSession(JwtClaims.userId(jwt), userId, sessionId);
         return ResponseEntity.noContent().build();
     }
 
+    @PutMapping("/users/{userId}/ban")
+    public AdminUserResponse banUser(@AuthenticationPrincipal Jwt jwt,
+                                     @PathVariable UUID userId,
+                                     @Valid @RequestBody UserBanRequest request) {
+        return adminService.banUser(JwtClaims.userId(jwt), userId, request.expiresAt(), request.reason());
+    }
+
+    @DeleteMapping("/users/{userId}/ban")
+    public AdminUserResponse unbanUser(@AuthenticationPrincipal Jwt jwt,
+                                       @PathVariable UUID userId) {
+        return adminService.unbanUser(JwtClaims.userId(jwt), userId);
+    }
+
     @PutMapping("/users/{userId}/roles/admin")
     public ResponseEntity<Void> grantAdmin(@AuthenticationPrincipal Jwt jwt,
-                                           @PathVariable Long userId) {
+                                           @PathVariable UUID userId) {
         adminService.grantAdmin(JwtClaims.userId(jwt), userId);
         return ResponseEntity.noContent().build();
     }
 
     @DeleteMapping("/users/{userId}/roles/admin")
     public ResponseEntity<Void> revokeAdmin(@AuthenticationPrincipal Jwt jwt,
-                                            @PathVariable Long userId) {
+                                            @PathVariable UUID userId) {
         adminService.revokeAdmin(JwtClaims.userId(jwt), userId);
         return ResponseEntity.noContent().build();
     }

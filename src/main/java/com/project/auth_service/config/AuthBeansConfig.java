@@ -7,6 +7,8 @@ import org.springframework.security.config.annotation.authentication.configurati
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 
+import java.time.Clock;
+
 @Configuration
 public class AuthBeansConfig {
     @Bean
@@ -17,5 +19,10 @@ public class AuthBeansConfig {
     @Bean
     public AuthenticationManager authenticationManager(AuthenticationConfiguration cfg) throws Exception{
         return cfg.getAuthenticationManager();
+    }
+
+    @Bean
+    public Clock clock() {
+        return Clock.systemUTC();
     }
 }

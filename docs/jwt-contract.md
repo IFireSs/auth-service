@@ -9,10 +9,11 @@
 - Передача токена: `Authorization: Bearer <access-token>`
 - Публичные ключи: `GET /.well-known/jwks.json`
 
-Issuer и глобальный максимум TTL настраиваются через переменные окружения:
+Issuer, audience auth-service и глобальный максимум TTL настраиваются через переменные окружения:
 
 ```env
 APP_SECURITY_ACCESS_TOKEN_ISSUER=auth-service
+APP_SECURITY_ACCESS_TOKEN_AUDIENCE=auth-service
 APP_SECURITY_ACCESS_TOKEN_TTL=PT10M
 ```
 
@@ -53,10 +54,10 @@ Auth-service выпускает access token с такими claims:
 {
   "iss": "auth-service",
   "sub": "username",
-  "aud": ["budget-manager"],
+  "aud": ["auth-service", "budget-manager"],
   "iat": 1710000000,
   "exp": 1710000600,
-  "uid": 123,
+  "uid": "7bfae473-a56d-4a64-8f3f-2159e73e4f3a",
   "roles": ["USER"],
   "sid": "0f5df3f8-21d9-42f9-8d55-1df1dc030301",
   "client_id": "budget-manager-web"
@@ -67,8 +68,8 @@ Auth-service выпускает access token с такими claims:
 
 - `iss`: issuer токена. Resource-сервисы обязаны его валидировать.
 - `sub`: username аутентифицированного пользователя.
-- `aud`: audience токена. Значение берётся из `auth_clients.token_audience` и определяет resource-сервис, для которого предназначен access token.
-- `uid`: стабильный id пользователя в auth-service. Resource-сервисы должны использовать его как внешний user id.
+- `aud`: список audience токена. Он содержит audience auth-service из `APP_SECURITY_ACCESS_TOKEN_AUDIENCE` и audience resource-сервиса из `auth_clients.token_audience`.
+- `uid`: стабильный UUID пользователя в auth-service. Resource-сервисы должны использовать его как внешний user id.
 - `roles`: роли пользователя без префикса `ROLE_`. Spring resource server должен мапить их в authorities с префиксом `ROLE_`.
 - `sid`: id login-сессии в auth-service. Resource-сервисы не должны использовать его как id пользователя.
 - `client_id`: id client application из `auth_clients.client_id`. Auth-service использует claim для проверки активного клиента, stateful validation и origin binding.
@@ -84,18 +85,28 @@ Resource-сервисы должны валидировать:
 - `aud` содержит ожидаемую audience resource-сервиса;
 - `exp` ещё не истёк;
 - обязательные claims присутствуют: `sub`, `aud`, `uid`, `roles`, `sid`, `client_id`;
-- типы claims соответствуют контракту: `uid` является числом, `roles` является массивом строк, `sid` и `client_id` являются строками.
+- типы claims соответствуют контракту: `uid` является строкой в формате UUID, `roles` является массивом строк, `sid` и `client_id` являются строками.
+
+Resource-сервисы должны хранить `uid` как UUID/UUID-строку и не преобразовывать его в числовой тип.
 
 Resource-сервисы могут игнорировать `sid`, если им не нужна session-level диагностика. Они не должны обращаться напрямую к таблицам БД auth-service.
 
-## Семантика logout
+Auth-service при приёме access token дополнительно проверяет, что `aud` содержит
+`APP_SECURITY_ACCESS_TOKEN_AUDIENCE`. Проверка audience должна проверять наличие ожидаемого
+значения в списке, а не точное равенство всего списка.
 
-Auth-service поддерживает stateful validation access token для собственных endpoint'ов. В этом режиме auth-service проверяет активность auth-client'а и наличие активной refresh-сессии по `uid + client_id + sid`.
+## Семантика logout и блокировки пользователя
+
+Auth-service проверяет активный бан при login, refresh и при валидации каждого bearer JWT для собственных endpoint'ов.
+В stateful-режиме он дополнительно проверяет активность auth-client'а и наличие активной refresh-сессии
+по `uid + client_id + sid`.
 
 Внешние resource-сервисы должны валидировать access token stateless:
 
 - logout сразу отзывает refresh/session state в auth-service;
+- бан пользователя сразу отзывает все его refresh-сессии и запрещает login/refresh;
 - уже выпущенные access tokens остаются валидными в resource-сервисах до `exp`;
 - короткий TTL access token ограничивает максимальную задержку.
 
-Если понадобится мгновенный logout во всех сервисах, нужно добавить API gateway со stateful validation или introspection endpoint. Resource-сервисы не должны напрямую читать таблицы auth-service.
+Если понадобится мгновенный logout или бан во всех сервисах, нужно добавить API gateway со stateful validation,
+introspection endpoint или доставку revocation events. Resource-сервисы не должны напрямую читать таблицы auth-service.

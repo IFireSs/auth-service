@@ -4,8 +4,14 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.project.auth_service.api.dto.RegisterRequest;
 import com.project.auth_service.entity.OutboxEvent;
+import com.project.auth_service.entity.RefreshToken;
+import com.project.auth_service.entity.UserBan;
 import com.project.auth_service.enums.OutboxEventStatus;
+import com.project.auth_service.enums.UserBanEndType;
+import com.project.auth_service.repository.RefreshTokenRepository;
 import com.project.auth_service.repository.OutboxEventRepository;
+import com.project.auth_service.repository.UserBanRepository;
+import com.project.auth_service.config.KafkaEventProperties;
 import com.project.auth_service.service.OutboxEventService;
 import jakarta.servlet.http.Cookie;
 import org.junit.jupiter.api.Test;
@@ -33,6 +39,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.Base64;
 import java.util.List;
 import java.util.UUID;
@@ -57,6 +64,7 @@ class AuthServiceApplicationTests {
     private static final String TEST_JWT_KEY_ID = "auth-service-test-key";
     private static final String DEFAULT_CLIENT_ID = "budget-manager-web";
     private static final String DEFAULT_AUDIENCE = "budget-manager";
+    private static final String AUTH_SERVICE_AUDIENCE = "auth-service-api-test";
     private static final String SUPER_ADMIN_USERNAME = "bootstrap_super_admin";
     private static final String SUPER_ADMIN_PASSWORD = "Password123!";
     private static final KeyPair TEST_JWT_KEY_PAIR = generateTestKeyPair();
@@ -87,6 +95,7 @@ class AuthServiceApplicationTests {
         registry.add("app.bootstrap.super-admin.username", () -> SUPER_ADMIN_USERNAME);
         registry.add("app.bootstrap.super-admin.email", () -> "bootstrap-super-admin@example.com");
         registry.add("app.bootstrap.super-admin.password", () -> SUPER_ADMIN_PASSWORD);
+        registry.add("app.rate-limit.backend", () -> "in-memory");
         registry.add("app.rate-limit.register.capacity", () -> "100");
         registry.add("app.rate-limit.trusted-proxies[0]", () -> "10.0.0.10");
         registry.add("spring.jpa.properties.hibernate.default_schema", () -> TEST_SCHEMA);
@@ -104,10 +113,19 @@ class AuthServiceApplicationTests {
     private JwtEncoder jwtEncoder;
 
     @Autowired
+    private RefreshTokenRepository refreshTokenRepository;
+
+    @Autowired
     private OutboxEventRepository outboxEventRepository;
 
     @Autowired
     private OutboxEventService outboxEventService;
+
+    @Autowired
+    private UserBanRepository userBanRepository;
+
+    @Autowired
+    private KafkaEventProperties kafkaEventProperties;
 
     @Test
     void registerReturnsConflictForDuplicateUser() throws Exception {
@@ -150,7 +168,7 @@ class AuthServiceApplicationTests {
         JsonNode payload = readTokenPayload(readAccessToken(registerResult));
 
         org.junit.jupiter.api.Assertions.assertEquals(DEFAULT_CLIENT_ID, payload.get("client_id").asText());
-        org.junit.jupiter.api.Assertions.assertEquals(DEFAULT_AUDIENCE, payload.get("aud").asText());
+        assertAudienceContains(payload, AUTH_SERVICE_AUDIENCE, DEFAULT_AUDIENCE);
     }
 
     @Test
@@ -234,6 +252,61 @@ class AuthServiceApplicationTests {
         org.junit.jupiter.api.Assertions.assertEquals(sessionCookie.getValue(), refreshedSessionCookie.getValue());
         org.junit.jupiter.api.Assertions.assertNotNull(replaySameAttemptCookie);
         org.junit.jupiter.api.Assertions.assertEquals(firstReplayCookie.getValue(), replaySameAttemptCookie.getValue());
+    }
+
+    @Test
+    @org.springframework.transaction.annotation.Transactional
+    void refreshCleanupClearsExpiredReplayPayloadButKeepsRevokedRows() throws Exception {
+        CsrfContext csrf = getCsrfContext();
+        MvcResult registerResult = registerUser(csrf, "refresh_cleanup_" + UUID.randomUUID().toString().replace("-", ""));
+        UUID userId = readUuidClaim(readAccessToken(registerResult), "uid");
+        Instant now = Instant.now().truncatedTo(ChronoUnit.MILLIS);
+        Instant activeReplayExpiresAt = now.plusSeconds(30);
+
+        RefreshToken expiredReplay = refreshTokenRepository.findAllByUserIdAndRevokedFalse(userId)
+                .stream()
+                .findFirst()
+                .orElseThrow();
+        expiredReplay.setRevoked(true);
+        expiredReplay.setRevokedAt(now.minusSeconds(10));
+        expiredReplay.setReplacedByTokenHash("replacement-" + UUID.randomUUID());
+        expiredReplay.setRotationAttemptId("attempt-expired");
+        expiredReplay.setRotationResultTokenCipher("cipher-expired");
+        expiredReplay.setRotationResultExpiresAt(now.minusMillis(1));
+        refreshTokenRepository.saveAndFlush(expiredReplay);
+
+        RefreshToken activeReplay = refreshTokenRepository.saveAndFlush(RefreshToken.builder()
+                .userId(userId)
+                .tokenHash("active-replay-" + UUID.randomUUID())
+                .expiresAt(now.plusSeconds(3600))
+                .revoked(true)
+                .revokedAt(now.minusSeconds(5))
+                .replacedByTokenHash("replacement-" + UUID.randomUUID())
+                .sessionId(UUID.randomUUID().toString())
+                .clientId(DEFAULT_CLIENT_ID)
+                .createdAt(now.minusSeconds(10))
+                .lastUsedAt(now.minusSeconds(5))
+                .rotationAttemptId("attempt-active")
+                .rotationResultTokenCipher("cipher-active")
+                .rotationResultExpiresAt(activeReplayExpiresAt)
+                .build());
+
+        int cleared = refreshTokenRepository.clearExpiredRotationReplayPayloads(now);
+
+        org.junit.jupiter.api.Assertions.assertEquals(1, cleared);
+
+        RefreshToken clearedToken = refreshTokenRepository.findById(expiredReplay.getId()).orElseThrow();
+        org.junit.jupiter.api.Assertions.assertTrue(clearedToken.isRevoked());
+        org.junit.jupiter.api.Assertions.assertEquals(expiredReplay.getTokenHash(), clearedToken.getTokenHash());
+        org.junit.jupiter.api.Assertions.assertNotNull(clearedToken.getReplacedByTokenHash());
+        org.junit.jupiter.api.Assertions.assertNull(clearedToken.getRotationAttemptId());
+        org.junit.jupiter.api.Assertions.assertNull(clearedToken.getRotationResultTokenCipher());
+        org.junit.jupiter.api.Assertions.assertNull(clearedToken.getRotationResultExpiresAt());
+
+        RefreshToken retainedToken = refreshTokenRepository.findById(activeReplay.getId()).orElseThrow();
+        org.junit.jupiter.api.Assertions.assertEquals("attempt-active", retainedToken.getRotationAttemptId());
+        org.junit.jupiter.api.Assertions.assertEquals("cipher-active", retainedToken.getRotationResultTokenCipher());
+        org.junit.jupiter.api.Assertions.assertEquals(activeReplayExpiresAt, retainedToken.getRotationResultExpiresAt());
     }
 
     @Test
@@ -359,6 +432,18 @@ class AuthServiceApplicationTests {
     }
 
     @Test
+    void accessTokenWithoutAuthServiceAudienceIsRejected() throws Exception {
+        CsrfContext csrf = getCsrfContext();
+        MvcResult registerResult = registerUser(csrf, "wrong_audience_" + UUID.randomUUID().toString().replace("-", ""));
+        String validAccessToken = readAccessToken(registerResult);
+        String wrongAudienceToken = issueAccessToken(validAccessToken, "auth-service-test", List.of(DEFAULT_AUDIENCE));
+
+        mockMvc.perform(get("/api/v1/auth/sessions")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + wrongAudienceToken))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
     void jwksEndpointIsPublicAndContainsPublicKeyOnly() throws Exception {
         mockMvc.perform(get("/.well-known/jwks.json"))
                 .andExpect(status().isOk())
@@ -380,14 +465,14 @@ class AuthServiceApplicationTests {
         String username = "admin_candidate_" + UUID.randomUUID().toString().replace("-", "");
         MvcResult registerResult = registerUser(csrf, username);
         String userAccessToken = readAccessToken(registerResult);
-        long userId = readLongClaim(userAccessToken, "uid");
+        UUID userId = readUuidClaim(userAccessToken, "uid");
 
         mockMvc.perform(get("/api/v1/admin/users")
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + userAccessToken))
                 .andExpect(status().isForbidden());
 
         String superAdminAccessToken = readAccessToken(loginUser(csrf, SUPER_ADMIN_USERNAME, SUPER_ADMIN_PASSWORD));
-        long superAdminUserId = readLongClaim(superAdminAccessToken, "uid");
+        UUID superAdminUserId = readUuidClaim(superAdminAccessToken, "uid");
 
         mockMvc.perform(get("/api/v1/admin/users")
                         .param("query", SUPER_ADMIN_USERNAME)
@@ -405,7 +490,7 @@ class AuthServiceApplicationTests {
                         .param("role", "ADMIN")
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + superAdminAccessToken))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$[0].id").value(userId))
+                .andExpect(jsonPath("$[0].id").value(userId.toString()))
                 .andExpect(jsonPath("$[0].roles[?(@ == 'ADMIN')]").exists());
 
         mockMvc.perform(get("/api/v1/admin/users/{userId}/sessions", userId)
@@ -422,7 +507,7 @@ class AuthServiceApplicationTests {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$[0].eventType").value("ADMIN_ROLE_GRANTED"))
                 .andExpect(jsonPath("$[0].actorUserId").exists())
-                .andExpect(jsonPath("$[0].targetUserId").value(userId));
+                .andExpect(jsonPath("$[0].targetUserId").value(userId.toString()));
 
         mockMvc.perform(get("/api/v1/admin/audit-events")
                         .param("eventType", "ADMIN_ROLE_GRANTED")
@@ -431,8 +516,8 @@ class AuthServiceApplicationTests {
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + superAdminAccessToken))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$[0].eventType").value("ADMIN_ROLE_GRANTED"))
-                .andExpect(jsonPath("$[0].actorUserId").value(superAdminUserId))
-                .andExpect(jsonPath("$[0].targetUserId").value(userId));
+                .andExpect(jsonPath("$[0].actorUserId").value(superAdminUserId.toString()))
+                .andExpect(jsonPath("$[0].targetUserId").value(userId.toString()));
 
         mockMvc.perform(get("/api/v1/admin/audit-events")
                         .param("eventType", "SUPER_ADMIN_BOOTSTRAPPED")
@@ -440,7 +525,7 @@ class AuthServiceApplicationTests {
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + superAdminAccessToken))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$[0].eventType").value("SUPER_ADMIN_BOOTSTRAPPED"))
-                .andExpect(jsonPath("$[0].targetUserId").value(superAdminUserId))
+                .andExpect(jsonPath("$[0].targetUserId").value(superAdminUserId.toString()))
                 .andExpect(jsonPath("$[0].username").value(SUPER_ADMIN_USERNAME));
 
         String adminAccessToken = readAccessToken(loginUser(csrf, readStringClaim(userAccessToken, "sub"), "Password123!"));
@@ -466,6 +551,236 @@ class AuthServiceApplicationTests {
         mockMvc.perform(get("/api/v1/admin/users")
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + userAccessTokenAfterRevoke))
                 .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void superAdminCanBanAndUnbanUser() throws Exception {
+        CsrfContext csrf = getCsrfContext();
+        String username = "banned_user_" + UUID.randomUUID().toString().replace("-", "");
+        MvcResult registerResult = registerUser(csrf, username);
+        String userAccessToken = readAccessToken(registerResult);
+        UUID userId = readUuidClaim(userAccessToken, "uid");
+        Cookie refreshCookie = registerResult.getResponse().getCookie("refresh_token");
+        Cookie sessionCookie = registerResult.getResponse().getCookie("session_id");
+        String superAdminAccessToken = readAccessToken(loginUser(csrf, SUPER_ADMIN_USERNAME, SUPER_ADMIN_PASSWORD));
+
+        mockMvc.perform(put("/api/v1/admin/users/{userId}/ban", userId)
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + superAdminAccessToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "reason": "Repeated abuse"
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.id").value(userId.toString()))
+                .andExpect(jsonPath("$.banProtected").value(false))
+                .andExpect(jsonPath("$.activeBan.reason").value("Repeated abuse"))
+                .andExpect(jsonPath("$.activeBan.expiresAt").doesNotExist());
+
+        mockMvc.perform(get("/api/v1/auth/sessions")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + userAccessToken))
+                .andExpect(status().isUnauthorized());
+
+        mockMvc.perform(post("/api/v1/auth/refresh")
+                        .cookie(csrf.cookie(), refreshCookie, sessionCookie)
+                        .header("X-XSRF-TOKEN", csrf.token())
+                        .header(HttpHeaders.USER_AGENT, USER_AGENT))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("USER_BANNED"))
+                .andExpect(jsonPath("$.message").value("User is banned"));
+
+        String loginPayload = """
+                {
+                  "username": "%s",
+                  "password": "Password123!"
+                }
+                """.formatted(username);
+
+        mockMvc.perform(post("/api/v1/auth/login")
+                        .cookie(csrf.cookie())
+                        .header("X-XSRF-TOKEN", csrf.token())
+                        .header(HttpHeaders.USER_AGENT, USER_AGENT)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(loginPayload)
+                        .with(remoteAddr(nextLoginIp())))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("USER_BANNED"))
+                .andExpect(jsonPath("$.message").value("User is banned"));
+
+        mockMvc.perform(put("/api/v1/admin/users/{userId}/ban", userId)
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + superAdminAccessToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "reason": "Duplicate ban"
+                                }
+                                """))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("USER_ALREADY_BANNED"));
+
+        mockMvc.perform(delete("/api/v1/admin/users/{userId}/ban", userId)
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + superAdminAccessToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.activeBan").doesNotExist());
+
+        mockMvc.perform(post("/api/v1/auth/login")
+                        .cookie(csrf.cookie())
+                        .header("X-XSRF-TOKEN", csrf.token())
+                        .header(HttpHeaders.USER_AGENT, USER_AGENT)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(loginPayload)
+                        .with(remoteAddr(nextLoginIp())))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(get("/api/v1/admin/audit-events")
+                        .param("eventType", "USER_BANNED")
+                        .param("targetUserId", userId.toString())
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + superAdminAccessToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].details.reason").value("Repeated abuse"))
+                .andExpect(jsonPath("$[0].details.permanent").value(true))
+                .andExpect(jsonPath("$[0].details.sessionsRevoked").value(true));
+    }
+
+    @Test
+    void expiredBanIsEndedBeforeCreatingReplacement() throws Exception {
+        CsrfContext csrf = getCsrfContext();
+        String username = "reban_user_" + UUID.randomUUID().toString().replace("-", "");
+        MvcResult registerResult = registerUser(csrf, username);
+        UUID userId = readUuidClaim(readAccessToken(registerResult), "uid");
+        String superAdminAccessToken = readAccessToken(loginUser(csrf, SUPER_ADMIN_USERNAME, SUPER_ADMIN_PASSWORD));
+        UUID superAdminId = readUuidClaim(superAdminAccessToken, "uid");
+        Instant now = Instant.now();
+
+        UserBan expiredBan = userBanRepository.saveAndFlush(UserBan.builder()
+                .userId(userId)
+                .createdAt(now.minusSeconds(7200))
+                .expiresAt(now.minusSeconds(3600))
+                .reason("Expired temporary ban")
+                .createdBy(superAdminId)
+                .build());
+
+        mockMvc.perform(put("/api/v1/admin/users/{userId}/ban", userId)
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + superAdminAccessToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "reason": "Replacement ban"
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.activeBan.reason").value("Replacement ban"));
+
+        List<UserBan> userBans = userBanRepository.findAll().stream()
+                .filter(ban -> ban.getUserId().equals(userId))
+                .toList();
+        org.junit.jupiter.api.Assertions.assertEquals(2, userBans.size());
+
+        UserBan endedBan = userBans.stream()
+                .filter(ban -> ban.getId().equals(expiredBan.getId()))
+                .findFirst()
+                .orElseThrow();
+        org.junit.jupiter.api.Assertions.assertEquals(endedBan.getExpiresAt(), endedBan.getEndedAt());
+        org.junit.jupiter.api.Assertions.assertEquals(UserBanEndType.EXPIRED, endedBan.getEndType());
+        org.junit.jupiter.api.Assertions.assertNull(endedBan.getEndedBy());
+
+        UserBan replacementBan = userBans.stream()
+                .filter(ban -> ban.getEndedAt() == null)
+                .findFirst()
+                .orElseThrow();
+        org.junit.jupiter.api.Assertions.assertEquals("Replacement ban", replacementBan.getReason());
+        org.junit.jupiter.api.Assertions.assertEquals(1,
+                userBans.stream().filter(ban -> ban.getEndedAt() == null).count());
+    }
+
+    @Test
+    void banPermissionsProtectPrivilegedAndBootstrapUsers() throws Exception {
+        CsrfContext csrf = getCsrfContext();
+        String superAdminAccessToken = readAccessToken(loginUser(csrf, SUPER_ADMIN_USERNAME, SUPER_ADMIN_PASSWORD));
+        UUID superAdminUserId = readUuidClaim(superAdminAccessToken, "uid");
+
+        String adminUsername = "ban_admin_" + UUID.randomUUID().toString().replace("-", "");
+        UUID adminUserId = readUuidClaim(readAccessToken(registerUser(csrf, adminUsername)), "uid");
+        mockMvc.perform(put("/api/v1/admin/users/{userId}/roles/admin", adminUserId)
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + superAdminAccessToken))
+                .andExpect(status().isNoContent());
+        String adminAccessToken = readAccessToken(loginUser(csrf, adminUsername, "Password123!"));
+
+        String regularUsername = "ban_target_" + UUID.randomUUID().toString().replace("-", "");
+        UUID regularUserId = readUuidClaim(readAccessToken(registerUser(csrf, regularUsername)), "uid");
+        String expiresAt = Instant.now().plusSeconds(3600).toString();
+
+        mockMvc.perform(put("/api/v1/admin/users/{userId}/ban", regularUserId)
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + adminAccessToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "expiresAt": "%s",
+                                  "reason": "Temporary moderation action"
+                                }
+                """.formatted(expiresAt)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.activeBan.expiresAt").exists());
+
+        mockMvc.perform(delete("/api/v1/admin/users/{userId}/ban", regularUserId)
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + adminAccessToken))
+                .andExpect(status().isOk());
+
+        String secondAdminUsername = "ban_admin_target_" + UUID.randomUUID().toString().replace("-", "");
+        UUID secondAdminUserId = readUuidClaim(readAccessToken(registerUser(csrf, secondAdminUsername)), "uid");
+        mockMvc.perform(put("/api/v1/admin/users/{userId}/roles/admin", secondAdminUserId)
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + superAdminAccessToken))
+                .andExpect(status().isNoContent());
+
+        mockMvc.perform(put("/api/v1/admin/users/{userId}/ban", secondAdminUserId)
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + adminAccessToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "reason": "Not allowed"
+                                }
+                                """))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("USER_BAN_FORBIDDEN"));
+
+        mockMvc.perform(put("/api/v1/admin/users/{userId}/ban", secondAdminUserId)
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + superAdminAccessToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "reason": "Super admin moderation"
+                                }
+                                """))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(get("/api/v1/admin/users/{userId}", superAdminUserId)
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + superAdminAccessToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.banProtected").value(true));
+
+        mockMvc.perform(put("/api/v1/admin/users/{userId}/ban", superAdminUserId)
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + superAdminAccessToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "reason": "Self ban"
+                                }
+                                """))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("USER_BAN_FORBIDDEN"));
+
+        mockMvc.perform(put("/api/v1/admin/users/{userId}/ban", superAdminUserId)
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + adminAccessToken)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "reason": "Bootstrap ban"
+                                }
+                                """))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("USER_BAN_FORBIDDEN"))
+                .andExpect(jsonPath("$.message").value("User is protected from bans"));
     }
 
     @Test
@@ -521,11 +836,11 @@ class AuthServiceApplicationTests {
         String clientAccessToken = readAccessToken(registerResult);
         JsonNode clientTokenPayload = readTokenPayload(clientAccessToken);
         org.junit.jupiter.api.Assertions.assertEquals(clientId, clientTokenPayload.get("client_id").asText());
-        org.junit.jupiter.api.Assertions.assertEquals(audience, clientTokenPayload.get("aud").asText());
+        assertAudienceContains(clientTokenPayload, AUTH_SERVICE_AUDIENCE, audience);
 
         String adminUsername = "client_admin_" + UUID.randomUUID().toString().replace("-", "");
         MvcResult adminRegisterResult = registerUser(csrf, adminUsername);
-        long adminUserId = readLongClaim(readAccessToken(adminRegisterResult), "uid");
+        UUID adminUserId = readUuidClaim(readAccessToken(adminRegisterResult), "uid");
 
         mockMvc.perform(put("/api/v1/admin/users/{userId}/roles/admin", adminUserId)
                         .header(HttpHeaders.AUTHORIZATION, "Bearer " + superAdminAccessToken))
@@ -881,9 +1196,145 @@ class AuthServiceApplicationTests {
     }
 
     @Test
+    void authSessionStoresResolvedClientIpInsteadOfSpoofedForwardedAddress() throws Exception {
+        CsrfContext csrf = getCsrfContext();
+        String username = "resolved_ip_" + UUID.randomUUID().toString().replace("-", "");
+        String payload = objectMapper.writeValueAsString(new RegisterRequest(
+                username,
+                "Password123!",
+                username + "@example.com",
+                null
+        ));
+
+        MvcResult registerResult = mockMvc.perform(post("/api/v1/auth/register")
+                        .cookie(csrf.cookie())
+                        .header("X-XSRF-TOKEN", csrf.token())
+                        .header(HttpHeaders.USER_AGENT, USER_AGENT)
+                        .header("X-Forwarded-For", "198.51.100.99, 203.0.113.25")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(payload)
+                        .with(remoteAddr("10.0.0.10")))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        mockMvc.perform(get("/api/v1/auth/sessions")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + readAccessToken(registerResult)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].ip").value("203.0.113.25"));
+    }
+
+    @Test
     void outboxClaimUsesProcessingLeaseAndSeparateFinalMark() {
         Instant now = Instant.now();
         UUID eventId = UUID.randomUUID();
+        savePendingOutboxEvent(eventId, now);
+
+        List<OutboxEvent> claimed = outboxEventService.claimPublishable(now);
+
+        org.junit.jupiter.api.Assertions.assertTrue(claimed.stream().anyMatch(event -> event.getId().equals(eventId)));
+        OutboxEvent processing = outboxEventRepository.findById(eventId).orElseThrow();
+        org.junit.jupiter.api.Assertions.assertEquals(OutboxEventStatus.PROCESSING, processing.getStatus());
+        org.junit.jupiter.api.Assertions.assertEquals(1, processing.getAttempts());
+        org.junit.jupiter.api.Assertions.assertNotNull(processing.getClaimId());
+        org.junit.jupiter.api.Assertions.assertTrue(
+                !processing.getLastAttemptAt().isBefore(now.minusMillis(1))
+                        && !processing.getLastAttemptAt().isAfter(now.plusMillis(1))
+        );
+        org.junit.jupiter.api.Assertions.assertTrue(processing.getLeaseUntil().isAfter(now));
+
+        org.junit.jupiter.api.Assertions.assertTrue(outboxEventService.markPublished(
+                processing.getId(),
+                processing.getClaimId(),
+                now.plusSeconds(1)
+        ));
+
+        OutboxEvent published = outboxEventRepository.findById(eventId).orElseThrow();
+        org.junit.jupiter.api.Assertions.assertEquals(OutboxEventStatus.PUBLISHED, published.getStatus());
+        org.junit.jupiter.api.Assertions.assertNotNull(published.getPublishedAt());
+        org.junit.jupiter.api.Assertions.assertNull(published.getClaimId());
+        org.junit.jupiter.api.Assertions.assertNull(published.getLeaseUntil());
+    }
+
+    @Test
+    void staleOutboxClaimCannotOverwriteCurrentClaim() {
+        Instant now = Instant.now();
+        UUID eventId = UUID.randomUUID();
+        savePendingOutboxEvent(eventId, now);
+
+        OutboxEvent firstClaim = findClaim(outboxEventService.claimPublishable(now), eventId);
+        Instant reclaimedAt = firstClaim.getLeaseUntil().plusMillis(1);
+        OutboxEvent secondClaim = findClaim(outboxEventService.claimPublishable(reclaimedAt), eventId);
+
+        org.junit.jupiter.api.Assertions.assertNotEquals(firstClaim.getClaimId(), secondClaim.getClaimId());
+        org.junit.jupiter.api.Assertions.assertEquals(2, secondClaim.getAttempts());
+        org.junit.jupiter.api.Assertions.assertFalse(outboxEventService.markPublished(
+                eventId,
+                firstClaim.getClaimId(),
+                reclaimedAt.plusSeconds(1)
+        ));
+
+        OutboxEvent stillProcessing = outboxEventRepository.findById(eventId).orElseThrow();
+        org.junit.jupiter.api.Assertions.assertEquals(OutboxEventStatus.PROCESSING, stillProcessing.getStatus());
+        org.junit.jupiter.api.Assertions.assertEquals(secondClaim.getClaimId(), stillProcessing.getClaimId());
+        org.junit.jupiter.api.Assertions.assertTrue(outboxEventService.markPublished(
+                eventId,
+                secondClaim.getClaimId(),
+                reclaimedAt.plusSeconds(2)
+        ));
+    }
+
+    @Test
+    void crashedOutboxClaimsBecomeDeadAfterMaximumAttempts() {
+        Instant attemptAt = Instant.now();
+        UUID eventId = UUID.randomUUID();
+        savePendingOutboxEvent(eventId, attemptAt);
+
+        for (int attempt = 1; attempt <= kafkaEventProperties.maxAttempts(); attempt++) {
+            OutboxEvent claim = findClaim(outboxEventService.claimPublishable(attemptAt), eventId);
+            org.junit.jupiter.api.Assertions.assertEquals(attempt, claim.getAttempts());
+            attemptAt = claim.getLeaseUntil().plusMillis(1);
+        }
+
+        org.junit.jupiter.api.Assertions.assertTrue(outboxEventService.claimPublishable(attemptAt).stream()
+                .noneMatch(event -> event.getId().equals(eventId)));
+        OutboxEvent dead = outboxEventRepository.findById(eventId).orElseThrow();
+        org.junit.jupiter.api.Assertions.assertEquals(OutboxEventStatus.DEAD, dead.getStatus());
+        org.junit.jupiter.api.Assertions.assertEquals(kafkaEventProperties.maxAttempts(), dead.getAttempts());
+        org.junit.jupiter.api.Assertions.assertNull(dead.getClaimId());
+        org.junit.jupiter.api.Assertions.assertNull(dead.getLeaseUntil());
+    }
+
+    @Test
+    void finalOutboxPublishFailureBecomesDeadImmediately() {
+        Instant now = Instant.now();
+        UUID eventId = UUID.randomUUID();
+        outboxEventRepository.save(OutboxEvent.builder()
+                .id(eventId)
+                .topic("auth.events")
+                .eventKey(eventId.toString())
+                .eventType("TEST_EVENT")
+                .payloadJson("{}")
+                .status(OutboxEventStatus.FAILED)
+                .attempts(kafkaEventProperties.maxAttempts() - 1)
+                .createdAt(now)
+                .nextAttemptAt(now.minusSeconds(1))
+                .build());
+
+        OutboxEvent finalClaim = findClaim(outboxEventService.claimPublishable(now), eventId);
+        org.junit.jupiter.api.Assertions.assertEquals(kafkaEventProperties.maxAttempts(), finalClaim.getAttempts());
+        org.junit.jupiter.api.Assertions.assertTrue(outboxEventService.markFailed(
+                eventId,
+                finalClaim.getClaimId(),
+                "Kafka unavailable",
+                now.plusSeconds(30)
+        ));
+
+        OutboxEvent dead = outboxEventRepository.findById(eventId).orElseThrow();
+        org.junit.jupiter.api.Assertions.assertEquals(OutboxEventStatus.DEAD, dead.getStatus());
+        org.junit.jupiter.api.Assertions.assertEquals("Kafka unavailable", dead.getLastError());
+    }
+
+    private void savePendingOutboxEvent(UUID eventId, Instant now) {
         outboxEventRepository.save(OutboxEvent.builder()
                 .id(eventId)
                 .topic("auth.events")
@@ -895,19 +1346,13 @@ class AuthServiceApplicationTests {
                 .createdAt(now)
                 .nextAttemptAt(now.minusSeconds(1))
                 .build());
+    }
 
-        List<OutboxEvent> claimed = outboxEventService.claimPublishable(now);
-
-        org.junit.jupiter.api.Assertions.assertTrue(claimed.stream().anyMatch(event -> event.getId().equals(eventId)));
-        OutboxEvent processing = outboxEventRepository.findById(eventId).orElseThrow();
-        org.junit.jupiter.api.Assertions.assertEquals(OutboxEventStatus.PROCESSING, processing.getStatus());
-        org.junit.jupiter.api.Assertions.assertTrue(processing.getNextAttemptAt().isAfter(now));
-
-        outboxEventService.markPublished(processing, now.plusSeconds(1));
-
-        OutboxEvent published = outboxEventRepository.findById(eventId).orElseThrow();
-        org.junit.jupiter.api.Assertions.assertEquals(OutboxEventStatus.PUBLISHED, published.getStatus());
-        org.junit.jupiter.api.Assertions.assertNotNull(published.getPublishedAt());
+    private OutboxEvent findClaim(List<OutboxEvent> claimed, UUID eventId) {
+        return claimed.stream()
+                .filter(event -> event.getId().equals(eventId))
+                .findFirst()
+                .orElseThrow();
     }
 
     private CsrfContext getCsrfContext() throws Exception {
@@ -985,8 +1430,8 @@ class AuthServiceApplicationTests {
                 .andReturn();
     }
 
-    private long readLongClaim(String accessToken, String claimName) throws Exception {
-        return readTokenPayload(accessToken).get(claimName).asLong();
+    private UUID readUuidClaim(String accessToken, String claimName) throws Exception {
+        return UUID.fromString(readTokenPayload(accessToken).get(claimName).asText());
     }
 
     private String readStringClaim(String accessToken, String claimName) throws Exception {
@@ -1013,6 +1458,10 @@ class AuthServiceApplicationTests {
     }
 
     private String issueAccessTokenWithWrongIssuer(String validAccessToken, String issuer) throws Exception {
+        return issueAccessToken(validAccessToken, issuer, List.of(AUTH_SERVICE_AUDIENCE, DEFAULT_AUDIENCE));
+    }
+
+    private String issueAccessToken(String validAccessToken, String issuer, List<String> audiences) throws Exception {
         JsonNode tokenPayload = readTokenPayload(validAccessToken);
 
         Instant now = Instant.now();
@@ -1021,9 +1470,11 @@ class AuthServiceApplicationTests {
                 .issuedAt(now)
                 .expiresAt(now.plusSeconds(600))
                 .subject(tokenPayload.get("sub").asText())
-                .claim("uid", tokenPayload.get("uid").asLong())
+                .audience(audiences)
+                .claim("uid", tokenPayload.get("uid").asText())
                 .claim("roles", List.of("USER"))
                 .claim("sid", tokenPayload.get("sid").asText())
+                .claim("client_id", tokenPayload.get("client_id").asText())
                 .build();
 
         return jwtEncoder.encode(JwtEncoderParameters.from(
@@ -1032,6 +1483,12 @@ class AuthServiceApplicationTests {
                         .build(),
                 claims
         )).getTokenValue();
+    }
+
+    private void assertAudienceContains(JsonNode tokenPayload, String... expectedAudiences) {
+        List<String> audiences = new java.util.ArrayList<>();
+        tokenPayload.get("aud").forEach(audience -> audiences.add(audience.asText()));
+        org.junit.jupiter.api.Assertions.assertEquals(List.of(expectedAudiences), audiences);
     }
 
     private static KeyPair generateTestKeyPair() {

@@ -6,6 +6,7 @@ import com.project.auth_service.api.dto.SessionResponse;
 import com.project.auth_service.api.dto.TokenResponse;
 import com.project.auth_service.cookie.SessionIdCookieFactory;
 import com.project.auth_service.exceptions.InvalidRefreshTokenException;
+import com.project.auth_service.rate_limit.ClientIpResolver;
 import com.project.auth_service.service.AuthService;
 import com.project.auth_service.cookie.RefreshCookieFactory;
 import com.project.auth_service.service.JwtClaims;
@@ -39,6 +40,7 @@ public class AuthController {
     private final AuthService authService;
     private final RefreshCookieFactory refreshCookieFactory;
     private final SessionIdCookieFactory sessionIdCookieFactory;
+    private final ClientIpResolver clientIpResolver;
 
     @PostMapping("/register")
     public ResponseEntity<TokenResponse> register(@Valid @RequestBody RegisterRequest registerRequest,
@@ -51,7 +53,7 @@ public class AuthController {
                 .password(registerRequest.getPassword())
                 .clientId(registerRequest.getClientId())
                 .sessionId(UUID.randomUUID().toString())
-                .ip(request.getRemoteAddr())
+                .ip(clientIpResolver.resolve(request))
                 .userAgent(userAgent)
                 .origin(origin)
                 .build());
@@ -70,7 +72,7 @@ public class AuthController {
                 .password(loginRequest.getPassword())
                 .clientId(loginRequest.getClientId())
                 .sessionId(UUID.randomUUID().toString())
-                .ip(request.getRemoteAddr())
+                .ip(clientIpResolver.resolve(request))
                 .userAgent(userAgent)
                 .origin(origin)
                 .build());
@@ -92,7 +94,7 @@ public class AuthController {
 
         AuthService.AuthResult authResult = authService.refresh(AuthService.RefreshCommand.builder()
                 .rawRefreshToken(refreshToken)
-                .ip(request.getRemoteAddr())
+                .ip(clientIpResolver.resolve(request))
                 .userAgent(userAgent)
                 .origin(origin)
                 .sessionId(sessionId)
@@ -111,7 +113,7 @@ public class AuthController {
 
     @PostMapping("/logout-all")
     public ResponseEntity<Void> logoutAll(@AuthenticationPrincipal Jwt jwt){
-        Long userId = JwtClaims.userId(jwt);
+        UUID userId = JwtClaims.userId(jwt);
         authService.logoutAll(userId);
         return noContentWithClearedAuthCookies();
     }
@@ -119,7 +121,7 @@ public class AuthController {
     @PostMapping("/logout-session/{sessionId}")
     public ResponseEntity<Void> logoutSession(@AuthenticationPrincipal Jwt jwt,
                                               @PathVariable String sessionId){
-        Long userId = JwtClaims.userId(jwt);
+        UUID userId = JwtClaims.userId(jwt);
         authService.logoutSession(userId, sessionId);
         String currentSessionId = JwtClaims.sessionId(jwt);
         if (!sessionId.equals(currentSessionId)) {
@@ -130,7 +132,7 @@ public class AuthController {
 
     @GetMapping("/sessions")
     public ResponseEntity<List<SessionResponse>> sessions(@AuthenticationPrincipal Jwt jwt){
-        Long userId = JwtClaims.userId(jwt);
+        UUID userId = JwtClaims.userId(jwt);
         return ResponseEntity.ok().body(authService.sessions(userId));
     }
 
@@ -167,7 +169,7 @@ public class AuthController {
         if (jwt == null) {
             return null;
         }
-        Long userId = JwtClaims.userId(jwt);
+        UUID userId = JwtClaims.userId(jwt);
         String sessionId = JwtClaims.sessionId(jwt);
         if (userId == null || sessionId == null || sessionId.isBlank()) {
             return null;

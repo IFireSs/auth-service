@@ -12,6 +12,8 @@ import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
 
+import java.time.Instant;
+import java.util.UUID;
 
 @Entity
 @Getter
@@ -23,8 +25,8 @@ import lombok.Setter;
 public class User {
     @Id
     @Column(name = "id")
-    @GeneratedValue(strategy = GenerationType.IDENTITY)
-    private Long id;
+    @GeneratedValue(strategy = GenerationType.UUID)
+    private UUID id;
 
     @Column(name = "username", unique = true, nullable = false)
     private String username;
@@ -34,4 +36,10 @@ public class User {
 
     @Column(name = "email", unique = true, nullable = false)
     private String email;
+
+    @Column(name = "created_at", nullable = false)
+    private Instant createdAt;
+
+    @Column(name = "ban_protected", nullable = false)
+    private boolean banProtected;
 }

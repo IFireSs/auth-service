@@ -5,6 +5,7 @@ import com.project.auth_service.entity.AuthClient;
 import com.project.auth_service.entity.RefreshToken;
 import com.project.auth_service.enums.AuditEventType;
 import com.project.auth_service.exceptions.RefreshTokenAlreadyProcessedException;
+import com.project.auth_service.exceptions.BannedUserRefreshException;
 import com.project.auth_service.repository.RefreshTokenRepository;
 import com.project.auth_service.service.dto.OffsetBasedPageRequest;
 import com.project.auth_service.service.dto.SessionFilter;
@@ -23,6 +24,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.UUID;
 
 @Service
 public class RefreshTokenService {
@@ -38,18 +40,21 @@ public class RefreshTokenService {
     private final boolean bindToIp;
     private final AuditEventService auditEventService;
     private final AuthClientService authClientService;
+    private final UserBanService userBanService;
 
     public RefreshTokenService(RefreshTokenRepository refreshTokenRepository
                         ,RefreshTokenCrypto refreshTokenCrypto
                         ,RefreshReplayCrypto refreshReplayCrypto
                         ,AppSecurityProperties securityProperties
                         ,AuditEventService auditEventService
-                        ,AuthClientService authClientService) {
+                        ,AuthClientService authClientService
+                        ,UserBanService userBanService) {
         this.refreshTokenRepository = refreshTokenRepository;
         this.refreshTokenCrypto = refreshTokenCrypto;
         this.refreshReplayCrypto = refreshReplayCrypto;
         this.auditEventService = auditEventService;
         this.authClientService = authClientService;
+        this.userBanService = userBanService;
         this.revokeDetect = securityProperties.refresh().revokeDetect();
         this.reuseGrace = securityProperties.refresh().reuseGrace();
         this.requireSessionId = securityProperties.refresh().clientBinding().requireSessionId();
@@ -57,7 +62,7 @@ public class RefreshTokenService {
         this.bindToIp = securityProperties.refresh().clientBinding().bindToIp();
     }
 
-    public String createSession(Long userId, String sessionId, String ip, String userAgent, AuthClient client) {
+    public String createSession(UUID userId, String sessionId, String ip, String userAgent, AuthClient client) {
         var rawToken = refreshTokenCrypto.generateRawToken();
         var hash = refreshTokenCrypto.hash(rawToken);
         var now = Instant.now();
@@ -79,7 +84,7 @@ public class RefreshTokenService {
         return rawToken;
     }
 
-    public record RotateResult(String rawRefreshToken, Long userId, String sessionId, String clientId) {
+    public record RotateResult(String rawRefreshToken, UUID userId, String sessionId, String clientId) {
         @Override
         public String toString() {
             return "RotateResult{" +
@@ -102,6 +107,9 @@ public class RefreshTokenService {
         var oldHash = refreshTokenCrypto.hash(rawRefreshToken);
         var old = refreshTokenRepository.findByTokenHashForUpdate(oldHash).orElseThrow(InvalidRefreshTokenException::new);
         var now = Instant.now();
+        if (userBanService.isBanned(old.getUserId())) {
+            throw new BannedUserRefreshException();
+        }
         AuthClient client = authClientService.resolveActiveClient(old.getClientId());
         authClientService.validateOriginAllowed(client, origin);
         String normalizedAttemptId = normalizeAttemptId(refreshAttemptId);
@@ -196,7 +204,7 @@ public class RefreshTokenService {
     }
 
     @Transactional
-    public void revokeAllByUserId(Long userId, Instant now) {
+    public void revokeAllByUserId(UUID userId, Instant now) {
         if(!revokeDetect){
             refreshTokenRepository.deleteAllByUserId(userId);
         }else{
@@ -204,12 +212,17 @@ public class RefreshTokenService {
         }
 
     }
+
+    @Transactional
+    public void revokeAllByUserIdPreservingState(UUID userId, Instant now) {
+        refreshTokenRepository.revokeAllActiveByUserId(userId, now);
+    }
     
-    public List<RefreshToken> findAllByUserIdAndRevokedFalse(Long userId) {
+    public List<RefreshToken> findAllByUserIdAndRevokedFalse(UUID userId) {
         return refreshTokenRepository.findAllByUserIdAndRevokedFalse(userId);
     }
 
-    public List<RefreshToken> findAllByUserId(Long userId, SessionFilter filter, int limit, int offset) {
+    public List<RefreshToken> findAllByUserId(UUID userId, SessionFilter filter, int limit, int offset) {
         Sort sort = Sort.by("createdAt").descending().and(Sort.by("id").descending());
 
         return refreshTokenRepository.findAll(
@@ -221,7 +234,7 @@ public class RefreshTokenService {
     }
 
     @Transactional
-    public void revokeAllActiveByUserIdAndSessionId(Long userId, String sessionId, Instant now) {
+    public void revokeAllActiveByUserIdAndSessionId(UUID userId, String sessionId, Instant now) {
         if(!revokeDetect){
             refreshTokenRepository.deleteAllByUserIdAndSessionId(userId, sessionId);
         }else {
@@ -229,7 +242,7 @@ public class RefreshTokenService {
         }
     }
 
-    private void markCompromisedAndKillSessionOnce(Long userId, String sessionId, Instant now, String reason) {
+    private void markCompromisedAndKillSessionOnce(UUID userId, String sessionId, Instant now, String reason) {
         int first = refreshTokenRepository.markSessionCompromisedOnce(userId, sessionId, now, reason);
 
         if (first > 0) {
@@ -241,7 +254,7 @@ public class RefreshTokenService {
         }
     }
 
-    private void markCompromisedAndKillAllSessionsOnce(Long userId, Instant now, String reason) {
+    private void markCompromisedAndKillAllSessionsOnce(UUID userId, Instant now, String reason) {
         int first = refreshTokenRepository.markAllSessionsCompromisedOnce(userId, now, reason);
 
         if (first > 0) {
@@ -312,7 +325,7 @@ public class RefreshTokenService {
                 .build());
     }
 
-    private Specification<RefreshToken> sessionSpecification(Long userId, SessionFilter filter, Instant now) {
+    private Specification<RefreshToken> sessionSpecification(UUID userId, SessionFilter filter, Instant now) {
         return (root, query, criteriaBuilder) -> {
             List<Predicate> predicates = new ArrayList<>();
             predicates.add(criteriaBuilder.equal(root.get("userId"), userId));

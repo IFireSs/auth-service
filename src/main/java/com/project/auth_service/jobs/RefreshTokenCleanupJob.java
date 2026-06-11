@@ -30,4 +30,17 @@ public class RefreshTokenCleanupJob {
             log.info("Refresh token cleanup: deleted {} rows (cutoff={})", deleted, cutoff);
         }
     }
+
+    @Scheduled(fixedDelayString = "${app.security.refresh.cleanup.replay-payload-cleanup-fixed-delay-ms}")
+    @Transactional
+    public void cleanupExpiredRotationReplayPayloads() {
+        if (!props.refresh().cleanup().enabled()) return;
+
+        Instant now = Instant.now();
+        int cleared = refreshTokenRepository.clearExpiredRotationReplayPayloads(now);
+
+        if (cleared > 0) {
+            log.info("Refresh token cleanup: cleared {} expired rotation replay payloads", cleared);
+        }
+    }
 }

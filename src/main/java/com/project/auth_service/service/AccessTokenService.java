@@ -15,6 +15,8 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.Collection;
 import java.util.List;
+import java.util.UUID;
+import java.util.stream.Stream;
 
 @Service
 @RequiredArgsConstructor
@@ -23,7 +25,7 @@ public class AccessTokenService {
     private final AppSecurityProperties securityProperties;
     private final AuthClientService authClientService;
 
-    public String issueAccessToken(Long userId,
+    public String issueAccessToken(UUID userId,
                                    String username,
                                    Collection<Role> roles,
                                    String sessionId,
@@ -33,14 +35,20 @@ public class AccessTokenService {
         List<String> stringRoles = roles.stream()
                 .map(Role::name)
                 .toList();
+        List<String> audiences = Stream.of(
+                        securityProperties.accessToken().audience(),
+                        client.getTokenAudience()
+                )
+                .distinct()
+                .toList();
 
         var claims = JwtClaimsSet.builder()
                 .issuer(securityProperties.accessToken().issuer())
                 .issuedAt(now)
                 .expiresAt(now.plus(effectiveAccessTokenTtl(client)))
                 .subject(username)
-                .audience(List.of(client.getTokenAudience()))
-                .claim(JwtClaims.USER_ID, userId)
+                .audience(audiences)
+                .claim(JwtClaims.USER_ID, userId.toString())
                 .claim(JwtClaims.ROLES, stringRoles)
                 .claim(JwtClaims.SESSION_ID, sessionId)
                 .claim(JwtClaims.CLIENT_ID, client.getClientId())

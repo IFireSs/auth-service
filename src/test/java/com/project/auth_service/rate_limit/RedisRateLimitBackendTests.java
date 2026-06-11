@@ -34,21 +34,28 @@ class RedisRateLimitBackendTests {
                     "203.0.113.10",
                     new RateLimitProperties.Limit(2, Duration.ofMinutes(10))
             );
-            RateLimitBackend.Request usernameIpBucket = new RateLimitBackend.Request(
-                    RateLimitService.Scope.LOGIN_USERNAME_IP,
-                    "alice:203.0.113.10",
+            RateLimitBackend.Request accountBucket = new RateLimitBackend.Request(
+                    RateLimitService.Scope.LOGIN_ACCOUNT,
+                    "account-hash",
+                    new RateLimitProperties.Limit(2, Duration.ofMinutes(10))
+            );
+            RateLimitBackend.Request accountIpBucket = new RateLimitBackend.Request(
+                    RateLimitService.Scope.LOGIN_ACCOUNT_IP,
+                    "account-hash:203.0.113.10",
                     new RateLimitProperties.Limit(1, Duration.ofMinutes(10))
             );
 
-            RateLimitBackend.Result first = backend.tryConsume(List.of(ipBucket, usernameIpBucket));
+            RateLimitBackend.Result first = backend.tryConsume(List.of(ipBucket, accountBucket, accountIpBucket));
             assertTrue(first.consumed());
 
-            RateLimitBackend.Result rejected = backend.tryConsume(List.of(ipBucket, usernameIpBucket));
+            RateLimitBackend.Result rejected = backend.tryConsume(List.of(ipBucket, accountBucket, accountIpBucket));
             assertFalse(rejected.consumed());
-            assertEquals(RateLimitService.Scope.LOGIN_USERNAME_IP, rejected.rejectedScope());
+            assertEquals(RateLimitService.Scope.LOGIN_ACCOUNT_IP, rejected.rejectedScope());
 
             RateLimitBackend.Result ipOnly = backend.tryConsume(List.of(ipBucket));
             assertTrue(ipOnly.consumed());
+            RateLimitBackend.Result accountOnly = backend.tryConsume(List.of(accountBucket));
+            assertTrue(accountOnly.consumed());
         } finally {
             connectionFactory.destroy();
         }
@@ -66,7 +73,12 @@ class RedisRateLimitBackendTests {
 
     private RateLimitProperties properties() {
         return new RateLimitProperties(
-                new RateLimitProperties.Limit(5, Duration.ofMinutes(10)),
+                new RateLimitProperties.Login(
+                        new RateLimitProperties.Limit(30, Duration.ofMinutes(10)),
+                        new RateLimitProperties.Limit(10, Duration.ofMinutes(15)),
+                        new RateLimitProperties.Limit(5, Duration.ofMinutes(10)),
+                        "test-rate-limit-account-key-secret-0123456789"
+                ),
                 new RateLimitProperties.Limit(10, Duration.ofMinutes(10)),
                 new RateLimitProperties.Limit(30, Duration.ofMinutes(1)),
                 new RateLimitProperties.Limit(60, Duration.ofMinutes(1)),

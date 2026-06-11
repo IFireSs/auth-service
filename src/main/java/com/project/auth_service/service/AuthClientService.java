@@ -26,6 +26,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 
 @Service
 @RequiredArgsConstructor
@@ -92,7 +93,7 @@ public class AuthClientService {
     }
 
     @Transactional
-    public AuthClientResponse createClient(Long actorUserId, AuthClientCreateRequest request) {
+    public AuthClientResponse createClient(UUID actorUserId, AuthClientCreateRequest request) {
         String clientId = request.clientId().trim();
         if (authClientRepository.existsByClientId(clientId)) {
             throw new AuthClientAlreadyExistsException();
@@ -125,7 +126,7 @@ public class AuthClientService {
     }
 
     @Transactional
-    public AuthClientResponse updateClient(Long actorUserId, String clientId, AuthClientUpdateRequest request) {
+    public AuthClientResponse updateClient(UUID actorUserId, String clientId, AuthClientUpdateRequest request) {
         AuthClient client = findClient(clientId);
         client.update(
                 request.name().trim(),
@@ -141,7 +142,7 @@ public class AuthClientService {
     }
 
     @Transactional
-    public AuthClientResponse enableClient(Long actorUserId, String clientId) {
+    public AuthClientResponse enableClient(UUID actorUserId, String clientId) {
         AuthClient client = findClient(clientId);
         client.enable(Instant.now());
         invalidateOriginCache();
@@ -150,7 +151,7 @@ public class AuthClientService {
     }
 
     @Transactional
-    public AuthClientResponse disableClient(Long actorUserId, String clientId) {
+    public AuthClientResponse disableClient(UUID actorUserId, String clientId) {
         AuthClient client = findClient(clientId);
         client.disable(Instant.now());
         invalidateOriginCache();
@@ -312,7 +313,7 @@ public class AuthClientService {
         return value != null && !value.isBlank();
     }
 
-    private void auditClientChange(AuditEventType eventType, Long actorUserId, AuthClient client) {
+    private void auditClientChange(AuditEventType eventType, UUID actorUserId, AuthClient client) {
         auditEventService.record(eventType, AuditEventService.AuditEventCommand.builder()
                 .actorUserId(actorUserId)
                 .details(Map.of(

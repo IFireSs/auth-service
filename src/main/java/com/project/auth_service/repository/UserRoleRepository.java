@@ -10,12 +10,13 @@ import org.springframework.stereotype.Repository;
 
 import java.util.Collection;
 import java.util.List;
+import java.util.UUID;
 
 @Repository
 public interface UserRoleRepository extends JpaRepository<UserRoleEntity, UserRoleId> {
 
     @Query("select ur.id.role from UserRoleEntity ur where ur.id.userId = :userId")
-    List<Role> findRolesByUserId(@Param("userId") Long userId);
+    List<Role> findRolesByUserId(@Param("userId") UUID userId);
 
     @Query("""
             select ur.id.userId as userId,
@@ -23,13 +24,13 @@ public interface UserRoleRepository extends JpaRepository<UserRoleEntity, UserRo
             from UserRoleEntity ur
             where ur.id.userId in :userIds
             """)
-    List<UserRoleView> findRolesByUserIds(@Param("userIds") Collection<Long> userIds);
+    List<UserRoleView> findRolesByUserIds(@Param("userIds") Collection<UUID> userIds);
 
     @Query("select count(ur) from UserRoleEntity ur where ur.id.role = :role")
     long countByRole(@Param("role") Role role);
 
     interface UserRoleView {
-        Long getUserId();
+        UUID getUserId();
 
         Role getRole();
     }

@@ -31,10 +31,22 @@ public class KafkaOutboxPublisher {
 
     private void publish(OutboxEvent event) {
         try {
-            kafkaTemplate.send(event.getTopic(), event.getEventKey(), event.getPayloadJson()).get(5, TimeUnit.SECONDS);
-            outboxEventService.markPublished(event, Instant.now());
+            kafkaTemplate.send(event.getTopic(), event.getEventKey(), event.getPayloadJson())
+                    .get(kafkaEventProperties.sendTimeoutMs(), TimeUnit.MILLISECONDS);
+            if (!outboxEventService.markPublished(event.getId(), event.getClaimId(), Instant.now())) {
+                log.warn("Ignored publish completion for outbox event {} because its claim is no longer current",
+                        event.getId());
+            }
         } catch (Exception e) {
-            outboxEventService.markFailed(event, e.getMessage(), Instant.now().plusMillis(kafkaEventProperties.retryDelayMs()));
+            if (!outboxEventService.markFailed(
+                    event.getId(),
+                    event.getClaimId(),
+                    e.getMessage(),
+                    Instant.now().plusMillis(kafkaEventProperties.retryDelayMs())
+            )) {
+                log.warn("Ignored publish failure for outbox event {} because its claim is no longer current",
+                        event.getId());
+            }
             log.warn("Failed to publish outbox event {} to Kafka", event.getId(), e);
         }
     }

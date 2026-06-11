@@ -12,6 +12,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
+import java.util.UUID;
 
 @Component
 @RequiredArgsConstructor
@@ -25,18 +26,25 @@ public class AccessTokenStateValidator implements OAuth2TokenValidator<Jwt> {
     private final AppSecurityProperties securityProperties;
     private final RefreshTokenRepository refreshTokenRepository;
     private final AuthClientService authClientService;
+    private final UserBanService userBanService;
 
     @Override
     @Transactional(readOnly = true)
     public OAuth2TokenValidatorResult validate(Jwt token) {
+        UUID userId = JwtClaims.userId(token);
+        if (userId == null) {
+            return OAuth2TokenValidatorResult.failure(ACCESS_TOKEN_SESSION_INVALID);
+        }
+        if (userBanService.isBanned(userId)) {
+            return OAuth2TokenValidatorResult.failure(ACCESS_TOKEN_SESSION_INVALID);
+        }
         if (securityProperties.accessToken().validationMode() == AppSecurityProperties.ValidationMode.STATELESS) {
             return OAuth2TokenValidatorResult.success();
         }
 
-        Long userId = JwtClaims.userId(token);
         String sessionId = JwtClaims.sessionId(token);
         String clientId = JwtClaims.clientId(token);
-        if (userId == null || sessionId == null || sessionId.isBlank() || clientId == null || clientId.isBlank()) {
+        if (sessionId == null || sessionId.isBlank() || clientId == null || clientId.isBlank()) {
             return OAuth2TokenValidatorResult.failure(ACCESS_TOKEN_SESSION_INVALID);
         }
         if (!authClientService.existsActiveClient(clientId)) {

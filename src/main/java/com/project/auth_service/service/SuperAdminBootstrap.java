@@ -49,6 +49,7 @@ public class SuperAdminBootstrap implements ApplicationRunner {
                 passwordEncoder.encode(properties.password()),
                 List.of(Role.SUPER_ADMIN)
         );
+        userRepository.findById(superAdmin.id()).orElseThrow().setBanProtected(true);
 
         auditEventService.record(AuditEventType.SUPER_ADMIN_BOOTSTRAPPED, AuditEventService.AuditEventCommand.builder()
                 .targetUserId(superAdmin.id())

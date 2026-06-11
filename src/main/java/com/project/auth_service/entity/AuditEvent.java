@@ -34,10 +34,10 @@ public class AuditEvent {
     private Instant occurredAt;
 
     @Column(name = "actor_user_id")
-    private Long actorUserId;
+    private UUID actorUserId;
 
     @Column(name = "target_user_id")
-    private Long targetUserId;
+    private UUID targetUserId;
 
     @Column(name = "username")
     private String username;

@@ -3,6 +3,7 @@ package com.project.auth_service.config;
 import com.nimbusds.jose.jwk.JWKSet;
 import com.nimbusds.jose.jwk.RSAKey;
 import com.nimbusds.jose.jwk.source.ImmutableJWKSet;
+import com.project.auth_service.service.AccessTokenAudienceValidator;
 import com.project.auth_service.service.AccessTokenStateValidator;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -41,11 +42,13 @@ public class JwtConfig {
 
     @Bean
     public JwtDecoder jwtDecoder(RSAKey jwtRsaKey,
+                                 AccessTokenAudienceValidator accessTokenAudienceValidator,
                                  AccessTokenStateValidator accessTokenStateValidator,
                                  AppSecurityProperties securityProperties) throws Exception {
         NimbusJwtDecoder decoder = NimbusJwtDecoder.withPublicKey(jwtRsaKey.toRSAPublicKey()).build();
         decoder.setJwtValidator(new DelegatingOAuth2TokenValidator<>(
                 JwtValidators.createDefaultWithIssuer(securityProperties.accessToken().issuer()),
+                accessTokenAudienceValidator,
                 accessTokenStateValidator
         ));
         return decoder;

@@ -58,7 +58,9 @@ public class InMemoryRateLimitBackend implements RateLimitBackend {
     }
 
     private Duration bucketRetention() {
-        return max(properties.login().refillPeriod(),
+        return max(properties.login().ip().refillPeriod(),
+                properties.login().account().refillPeriod(),
+                properties.login().accountIp().refillPeriod(),
                 properties.register().refillPeriod(),
                 properties.refresh().refillPeriod(),
                 properties.admin().refillPeriod()

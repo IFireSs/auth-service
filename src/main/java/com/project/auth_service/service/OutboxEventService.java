@@ -7,6 +7,7 @@ import com.project.auth_service.entity.OutboxEvent;
 import com.project.auth_service.enums.OutboxEventStatus;
 import com.project.auth_service.repository.OutboxEventRepository;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -17,6 +18,7 @@ import java.util.Map;
 import java.util.UUID;
 
 @Service
+@Slf4j
 @RequiredArgsConstructor
 public class OutboxEventService {
     private final OutboxEventRepository outboxEventRepository;
@@ -45,26 +47,40 @@ public class OutboxEventService {
 
     @Transactional
     public List<OutboxEvent> claimPublishable(Instant now) {
+        int deadEvents = outboxEventRepository.markExhaustedAsDead(now, kafkaEventProperties.maxAttempts());
+        if (deadEvents > 0) {
+            log.error("Marked {} exhausted outbox event(s) as DEAD", deadEvents);
+        }
         List<OutboxEvent> events = outboxEventRepository.lockPublishable(
                 now,
                 kafkaEventProperties.maxAttempts(),
                 kafkaEventProperties.batchSize()
         );
-        Instant leaseExpiresAt = now.plusMillis(kafkaEventProperties.retryDelayMs());
-        events.forEach(event -> event.markProcessing(leaseExpiresAt));
+        Instant leaseExpiresAt = now.plusMillis(kafkaEventProperties.leaseDurationMs());
+        events.forEach(event -> event.markProcessing(UUID.randomUUID(), leaseExpiresAt, now));
         return events;
     }
 
     @Transactional
-    public void markPublished(OutboxEvent event, Instant publishedAt) {
-        outboxEventRepository.findById(event.getId())
-                .ifPresent(storedEvent -> storedEvent.markPublished(publishedAt));
+    public boolean markPublished(UUID eventId, UUID claimId, Instant publishedAt) {
+        return outboxEventRepository.findByIdForUpdate(eventId)
+                .filter(storedEvent -> storedEvent.isProcessingClaim(claimId))
+                .map(storedEvent -> {
+                    storedEvent.markPublished(publishedAt);
+                    return true;
+                })
+                .orElse(false);
     }
 
     @Transactional
-    public void markFailed(OutboxEvent event, String error, Instant nextAttemptAt) {
-        outboxEventRepository.findById(event.getId())
-                .ifPresent(storedEvent -> storedEvent.markFailed(error, nextAttemptAt));
+    public boolean markFailed(UUID eventId, UUID claimId, String error, Instant nextAttemptAt) {
+        return outboxEventRepository.findByIdForUpdate(eventId)
+                .filter(storedEvent -> storedEvent.isProcessingClaim(claimId))
+                .map(storedEvent -> {
+                    storedEvent.markFailed(error, nextAttemptAt, kafkaEventProperties.maxAttempts());
+                    return true;
+                })
+                .orElse(false);
     }
 
     private String toPayloadJson(AuditEvent auditEvent) {

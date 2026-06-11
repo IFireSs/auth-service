@@ -4,14 +4,17 @@ import com.project.auth_service.config.RateLimitProperties;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.stereotype.Component;
 
-import java.net.Inet4Address;
 import java.net.InetAddress;
-import java.util.ArrayList;
+import java.net.UnknownHostException;
+import java.util.Arrays;
 import java.util.List;
+import java.util.regex.Pattern;
 
 @Component
 public class ClientIpResolver {
     private static final String X_FORWARDED_FOR = "X-Forwarded-For";
+    private static final int MAX_FORWARDED_ADDRESSES = 10;
+    private static final Pattern IPV6_LITERAL = Pattern.compile("[0-9a-fA-F:.]+");
 
     private final List<TrustedProxy> trustedProxies;
 
@@ -20,106 +23,154 @@ public class ClientIpResolver {
                 .filter(value -> value != null && !value.isBlank())
                 .map(String::trim)
                 .map(this::parseTrustedProxy)
-                .filter(proxy -> proxy != null)
                 .toList();
     }
 
     public String resolve(HttpServletRequest request) {
-        String remoteAddr = request.getRemoteAddr();
-        if (!isTrustedProxy(remoteAddr)) {
-            return remoteAddr;
+        IpAddress remoteAddress = parseRequestAddress(request.getRemoteAddr());
+        if (remoteAddress == null || !isTrustedProxy(remoteAddress)) {
+            return remoteAddress == null ? request.getRemoteAddr() : remoteAddress.canonicalValue();
         }
 
         String forwardedFor = request.getHeader(X_FORWARDED_FOR);
         if (forwardedFor == null || forwardedFor.isBlank()) {
-            return remoteAddr;
+            return remoteAddress.canonicalValue();
         }
 
-        return firstForwardedAddress(forwardedFor).stream()
-                .findFirst()
-                .orElse(remoteAddr);
-    }
+        String[] candidates = forwardedFor.split(",", -1);
+        if (candidates.length > MAX_FORWARDED_ADDRESSES) {
+            return remoteAddress.canonicalValue();
+        }
 
-    private List<String> firstForwardedAddress(String forwardedFor) {
-        List<String> addresses = new ArrayList<>();
-        for (String candidate : forwardedFor.split(",")) {
-            String ip = candidate.trim();
-            if (!ip.isBlank()) {
-                addresses.add(ip);
+        IpAddress current = remoteAddress;
+        for (int index = candidates.length - 1; index >= 0; index--) {
+            if (!isTrustedProxy(current)) {
                 break;
             }
+            IpAddress candidate = parseRequestAddress(candidates[index]);
+            if (candidate == null) {
+                return remoteAddress.canonicalValue();
+            }
+            current = candidate;
         }
-        return addresses;
+        return current.canonicalValue();
     }
 
-    private boolean isTrustedProxy(String remoteAddr) {
-        if (remoteAddr == null || remoteAddr.isBlank()) {
-            return false;
-        }
-        return trustedProxies.stream().anyMatch(proxy -> proxy.matches(remoteAddr));
+    private boolean isTrustedProxy(IpAddress address) {
+        return trustedProxies.stream().anyMatch(proxy -> proxy.matches(address));
     }
 
     private TrustedProxy parseTrustedProxy(String value) {
         try {
             if (value.contains("/")) {
                 String[] parts = value.split("/", 2);
-                InetAddress network = InetAddress.getByName(parts[0]);
+                IpAddress network = parseIpLiteral(parts[0]);
                 int prefixLength = Integer.parseInt(parts[1]);
-                if (!(network instanceof Inet4Address) || prefixLength < 0 || prefixLength > 32) {
-                    return null;
+                int maxPrefixLength = network.bytes().length * Byte.SIZE;
+                if (prefixLength < 0 || prefixLength > maxPrefixLength) {
+                    throw new IllegalArgumentException("CIDR prefix is out of range");
                 }
-                return new Ipv4CidrProxy(ipv4ToInt(network), prefixLength);
+                return new CidrProxy(network.bytes(), prefixLength);
             }
-            return new ExactIpProxy(InetAddress.getByName(value).getHostAddress());
+            return new ExactIpProxy(parseIpLiteral(value).bytes());
         } catch (Exception e) {
+            throw new IllegalStateException("Invalid trusted proxy IP or CIDR: " + value, e);
+        }
+    }
+
+    private IpAddress parseRequestAddress(String value) {
+        try {
+            return parseIpLiteral(value);
+        } catch (IllegalArgumentException e) {
             return null;
         }
     }
 
-    private int ipv4ToInt(InetAddress address) {
-        byte[] bytes = address.getAddress();
-        return ((bytes[0] & 0xff) << 24)
-                | ((bytes[1] & 0xff) << 16)
-                | ((bytes[2] & 0xff) << 8)
-                | (bytes[3] & 0xff);
+    private IpAddress parseIpLiteral(String value) {
+        if (value == null || value.isBlank()) {
+            throw new IllegalArgumentException("IP address is blank");
+        }
+        String candidate = value.trim();
+        byte[] bytes = candidate.contains(":")
+                ? parseIpv6Literal(candidate)
+                : parseIpv4Literal(candidate);
+        try {
+            return new IpAddress(bytes, InetAddress.getByAddress(bytes).getHostAddress());
+        } catch (UnknownHostException e) {
+            throw new IllegalArgumentException("Invalid IP address: " + value, e);
+        }
+    }
+
+    private byte[] parseIpv4Literal(String value) {
+        String[] parts = value.split("\\.", -1);
+        if (parts.length != 4) {
+            throw new IllegalArgumentException("Invalid IPv4 address: " + value);
+        }
+
+        byte[] address = new byte[4];
+        for (int index = 0; index < parts.length; index++) {
+            String part = parts[index];
+            if (part.isBlank() || part.length() > 3 || !part.chars().allMatch(Character::isDigit)) {
+                throw new IllegalArgumentException("Invalid IPv4 address: " + value);
+            }
+            int octet = Integer.parseInt(part);
+            if (octet > 255) {
+                throw new IllegalArgumentException("Invalid IPv4 address: " + value);
+            }
+            address[index] = (byte) octet;
+        }
+        return address;
+    }
+
+    private byte[] parseIpv6Literal(String value) {
+        if (!IPV6_LITERAL.matcher(value).matches()) {
+            throw new IllegalArgumentException("Invalid IPv6 address: " + value);
+        }
+        try {
+            byte[] address = InetAddress.getByName(value).getAddress();
+            if (address.length != 16) {
+                throw new IllegalArgumentException("Invalid IPv6 address: " + value);
+            }
+            return address;
+        } catch (UnknownHostException e) {
+            throw new IllegalArgumentException("Invalid IPv6 address: " + value, e);
+        }
     }
 
     private interface TrustedProxy {
-        boolean matches(String remoteAddr);
+        boolean matches(IpAddress address);
     }
 
-    private record ExactIpProxy(String address) implements TrustedProxy {
+    private record ExactIpProxy(byte[] address) implements TrustedProxy {
         @Override
-        public boolean matches(String remoteAddr) {
-            try {
-                return address.equals(InetAddress.getByName(remoteAddr).getHostAddress());
-            } catch (Exception e) {
-                return false;
-            }
+        public boolean matches(IpAddress candidate) {
+            return Arrays.equals(address, candidate.bytes());
         }
     }
 
-    private record Ipv4CidrProxy(int network, int prefixLength) implements TrustedProxy {
+    private record CidrProxy(byte[] network, int prefixLength) implements TrustedProxy {
         @Override
-        public boolean matches(String remoteAddr) {
-            try {
-                InetAddress address = InetAddress.getByName(remoteAddr);
-                if (!(address instanceof Inet4Address)) {
+        public boolean matches(IpAddress candidate) {
+            byte[] address = candidate.bytes();
+            if (network.length != address.length) {
+                return false;
+            }
+
+            int completeBytes = prefixLength / Byte.SIZE;
+            int remainingBits = prefixLength % Byte.SIZE;
+            for (int index = 0; index < completeBytes; index++) {
+                if (network[index] != address[index]) {
                     return false;
                 }
-                int mask = prefixLength == 0 ? 0 : (int) (0xffffffffL << (32 - prefixLength));
-                return (ipv4ToInt(address) & mask) == (network & mask);
-            } catch (Exception e) {
-                return false;
             }
+            if (remainingBits == 0) {
+                return true;
+            }
+            int mask = 0xff << (Byte.SIZE - remainingBits);
+            return (network[completeBytes] & mask) == (address[completeBytes] & mask);
         }
+    }
 
-        private int ipv4ToInt(InetAddress address) {
-            byte[] bytes = address.getAddress();
-            return ((bytes[0] & 0xff) << 24)
-                    | ((bytes[1] & 0xff) << 16)
-                    | ((bytes[2] & 0xff) << 8)
-                    | (bytes[3] & 0xff);
-        }
+    private record IpAddress(byte[] bytes, String canonicalValue) {
     }
 }

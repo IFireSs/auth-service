@@ -153,8 +153,8 @@ public class AuditEventService {
 
     @Builder
     public record AuditEventCommand(
-            Long actorUserId,
-            Long targetUserId,
+            UUID actorUserId,
+            UUID targetUserId,
             String username,
             String sessionId,
             String ip,
